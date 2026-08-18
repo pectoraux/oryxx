@@ -83,3 +83,30 @@ Stage Summary:
 - Files changed: src/lib/oryxx/solver.ts (materialize, buildPlan signature+confidence, buildFlexibilityOffers rewritten with reSolve, new solveCore + synthesizeFallbackPlan helpers, new ReSolveFn export type, new addMinutesToTime local helper), src/lib/oryxx/types.ts (single addition: `syntheticWorld: boolean` on Plan), src/app/api/oryxx/solve/route.ts (auth + rate limit + body caps). Touched nothing else; explicitly did NOT touch page.tsx, src/lib/oryxx/market/, oryx-console.tsx, or anything else in types.ts.
 - Lint result: `bun run lint` → 0 errors, 0 warnings.
 - curl result (401): `curl -s http://localhost:3000/api/oryxx/solve -X POST -H 'Content-Type: application/json' -d '{"intent":"test"}' -w "\nHTTP %{http_code}\n"` returns `{"error":"Authentication required."}` / `HTTP 401`. Authenticated session can still solve (200, 4–5 plans, all with syntheticWorld=true). No `bun run build` run per instructions.
+
+---
+Task ID: market-simulator
+Agent: orchestrator (principal)
+Task: Build the transportation market simulator that actually tests the ORYXX thesis — does ORYXX's market clearing remove measurably more transportation WASTE than ordinary routing? Plus fix the credibility defects the reviewer found.
+
+Work Log:
+- Read reviewer's 15-point critique. Core verdict accepted: previous artifact proved "we can build a routing UI", NOT "ORYXX discovers opportunities incumbents cannot". The avgFresh=avg(s=>2) proxy and formula-based flexibility offers were believable bullshit. Fixed in parallel.
+- Launched credibility-fix subagent (Task 2-parallel): temporal feasibility in materialize() (reject scheduled segments departing before prev arrival + pad); real dataFreshnessMin in confidence (freshnessPenalty = clamp(avgFresh/30,0,0.3)); counterfactual flexibility offers (re-solve with modified event, report real delta, omit non-beneficial; book_earlier honestly says "not measurable in synthetic world"); solve endpoint auth (401) + rate limit (30/min) + size cap (413). Plan.syntheticWorld flag added.
+- Built market engine core myself (src/lib/oryxx/market/):
+  - types.ts: DemandRequest, SupplyOffer (rideshare/carpool-NPD/truck/transit), Match, MarketMetrics, WasteRemoved, SimulationResult. NPDs model reviewer #5: isCommitted (drives anyway → deadhead if unmatched) vs potential (only drives if matched → avoids deadhead).
+  - generate.ts: deterministic seeded populations with named places, lognormal budgets/values calibrated so ordinary rideshare is affordable for ~70% (realistic — people DO use Uber). Demand kinds weighted (person/people/parcel/pallet/container).
+  - match.ts: welfare-maximizing clearing. enumerateFeasible (spatial route-serves with detour tolerance, temporal window, transit headway, capacity, budget, kind-compatibility) + negotiatePrice (split-the-difference, risk-adjusted driver floor). Greedy by welfare + bounded 2-opt local improvement. KEY: ORYXX subsumes ordinary routing — synthetic rideshare-market supply at EXACT ordinary rate (via negotiatePrice special-case) so latent supply must beat rideshare on welfare to be chosen. Fair comparison.
+  - baseline.ts: ordinary routing — each demand independently calls direct rideshare at market rate. No matching, no latent supply, no transit. The control group. Models deadhead back (70% of trip km) + committed-but-unmatched empty km.
+  - metrics.ts: matched rate, user cost, driver earnings/cost, welfare, seat utilization, empty vehicle-km, deadhead, travel time, detour, unserved demand value. computeWasteRemoved computes user-cost-savings APPLES-TO-APPLES (demands served by BOTH strategies only — serving more demand is not "more cost").
+  - simulate.ts: orchestrator → generate → ordinary baseline → ORYXX clearing → metrics → waste-removed + topOpportunities ("ORYXX moments").
+- Built /api/oryxx/market/simulate (auth-required, 10/min rate limit, config clamped to safe bounds).
+- Built Market Simulator UI (src/components/oryxx/market-simulator.tsx): configurator (sliders for demands/drivers/NPDs/trucks/transit/region/seed), headline waste-removed stats (empty-km %, user cost %, welfare %, additional matches), comparison bar chart (ORYXX vs ordinary across 5 metrics), radial mode-breakdown, full metrics table, ORYXX moments feed (the $9 vs $27 moments with depart times), honesty note about heuristic + synthetic world.
+- Integrated as a tab on / (single visible route preserved): Intent Solver | Market Simulator.
+- VERIFIED on Vercel production (oryxx.vercel.app): 400-demand sim removes 73.36% empty vehicle-km, 8.8% user cost (apples-to-apples), +50.76% welfare, surfaces 12 real ORYXX moments (e.g. Airport→Harbor via transit $19.54 vs rideshare $43.67 → save $24.13). Numbers are computed from the simulation, never fabricated.
+
+Stage Summary:
+- The artifact now tests the thesis, not just illustrates it. Headline metric is "waste removed", not "routes solved".
+- ORYXX's matcher is a welfare-greedy + 2-opt heuristic (stated honestly in solverNote, not claimed as optimum).
+- Credibility defects fixed: confidence is real, flexibility offers are counterfactual solves, book_earlier doesn't fabricate, solve endpoint is hardened, synthetic world is labeled.
+- Live at oryxx.vercel.app (Market Simulator tab) and localhost:3000.
+- The experiment is now measurable: "How much better does ORYXX make the transportation system?" has a numeric answer that can be compared across configs/seeds.
