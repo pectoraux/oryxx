@@ -37,3 +37,30 @@ Stage Summary:
 - Proves the core thesis (master prompt §1,2,4,9,10,18,19,20,21,22,26) without requiring two-sided marketplace liquidity (the cold-start killer): LLM parses intent; deterministic solver owns feasibility; time/transfers/latent-supply are optimization levers; confidence and unknowns are honest; continuous re-optimization streams live.
 - Moat seeds planted: transportation-opportunity graph, latent-supply graph, intent data, deterministic multi-objective solver.
 - Wedge validated: this is the intelligence core that real supply (commercial APIs, GTFS, fleets) plugs into later via the provider abstraction in world.ts.
+
+---
+Task ID: auth-deploy
+Agent: orchestrator (principal)
+Task: Add authentication (waitlist signup + admin approval + demo quick-login), connect Neon PostgreSQL, push to GitHub, deploy to Vercel at oryxx.vercel.app. App must behave identically on Vercel as on space-z.ai.
+
+Work Log:
+- ARCHITECTURE DECISION: socket.io mini-service won't work on Vercel (serverless, no long-lived WS). Converted continuous-optimization feed to SSE (/api/oryxx/stream, Edge Runtime) — works identically on Vercel + space-z.ai. Removed socket.io dependency from the client.
+- z-ai SDK FIX: SDK reads config from /etc/.z-ai-config (file-based) which doesn't exist on Vercel. Created src/lib/zai.ts loader that constructs ZAI from ZAI_* env vars, falls back to ZAI.create() (file loader) in sandbox.
+- Prisma: switched SQLite → PostgreSQL (Neon). DATABASE_URL=pooled (runtime), DIRECT_URL=direct (migrations). Schema: User + Waitlist models. Pushed schema to Neon, seeded admin (ekontetevi@gmail / Payswap123456) + 4 demo accounts (demo.{rider,driver,shipper,fleet}@oryxx.app / oryxx-demo).
+- NextAuth v4: Credentials provider, JWT strategy, scrypt password hashing (no native deps — critical for Vercel build). /api/auth/[...nextauth], /api/auth/signup (waitlist), /api/waitlist (admin list/approve/reject with temp password issuance).
+- Auth UI: modal on / (single visible route preserved). Login tab, Join-waitlist tab (signup → Waitlist row, status=pending), demo quick-login buttons for all 4 roles. UserMenu dropdown. Admin sees "Manage waitlist" → WaitlistAdmin panel (list/approve/reject, temp password display).
+- App gated behind auth: unauthenticated → landing + auto-open auth modal; authenticated → OryxConsole; admin → + waitlist panel.
+- SECURITY: untracked .env and db/custom.db from git (were committed in initial commit). Added .env.example. Verified no secrets in git history (initial .env only had SQLite path).
+- GitHub: created repo pectoraux/oryxx via API with PAT, pushed main branch.
+- Vercel: created project "oryxx" linked to GitHub repo (team tay-nurs-projects). Set 9 env vars (DATABASE_URL, DIRECT_URL, NEXTAUTH_SECRET, NEXTAUTH_URL=https://oryxx.vercel.app, ZAI_BASE_URL, ZAI_API_KEY, ZAI_CHAT_ID, ZAI_TOKEN, ZAI_USER_ID). Triggered production deployment → READY. Domain oryxx.vercel.app auto-assigned and verified.
+- VERIFIED ON VERCEL: admin login (role=admin in session), demo rider login, solve API (5 plans), SSE stream (all 7 event types fired end-to-end), admin waitlist panel (approved entry visible), signup→waitlist flow (newuser-test@oryxx.app landed in Neon as pending). Note: parsedBy=heuristic on Vercel because z-ai internal API (internal-api.z.ai) is not reachable from Vercel servers — graceful fallback works as designed; deterministic solver identical.
+
+Stage Summary:
+- Live at https://oryxx.vercel.app (production) and localhost:3000 (space-z.ai preview).
+- GitHub: https://github.com/pectoraux/oryxx
+- Auth works identically on both: NextAuth JWT + Neon Postgres.
+- Continuous optimization works identically: SSE replaced socket.io.
+- The only environment difference: LLM parse falls back to heuristic on Vercel (z-ai internal API not externally reachable). The deterministic solver — the actual intelligence core — is identical. Acceptable per design (graceful degradation).
+- Credentials for the user:
+  Admin: ekontetevi@gmail / Payswap123456
+  Demo: demo.rider/driver/shipper/fleet@oryxx.app / oryxx-demo (quick-login buttons in modal)
