@@ -14,14 +14,16 @@ import {
   Loader2,
   Sparkles,
   FlaskConical,
+  Beaker,
 } from "lucide-react";
 import { AuthGate } from "@/components/auth/auth-gate";
 import { UserMenu } from "@/components/auth/user-menu";
 import { WaitlistAdmin } from "@/components/auth/waitlist-admin";
 import { OryxConsole } from "@/components/oryxx/oryx-console";
 import { MarketSimulator } from "@/components/oryxx/market-simulator";
+import { ExperimentLab } from "@/components/oryxx/experiment-lab";
 
-type View = "solver" | "market";
+type View = "solver" | "market" | "experiment";
 
 export default function Home() {
   const { data: session, status } = useSession();
@@ -117,9 +119,17 @@ export default function Home() {
               >
                 <FlaskConical className="h-3.5 w-3.5" /> Market Simulator
               </button>
+              <button
+                onClick={() => setView("experiment")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  view === "experiment" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Beaker className="h-3.5 w-3.5" /> Experiment Lab
+              </button>
             </div>
           </div>
-          {view === "solver" ? <OryxConsole /> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div>}
+          {view === "solver" ? <OryxConsole /> : view === "market" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><ExperimentLab /></div>}
         </>
       ) : (
         <UnauthenticatedLanding onSignIn={() => setAuthOpen(true)} />
