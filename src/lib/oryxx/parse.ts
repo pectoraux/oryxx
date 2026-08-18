@@ -9,9 +9,9 @@
 // the schema, we fall back to a deterministic heuristic parser so the product
 // keeps working.
 
-import ZAI from "z-ai-web-dev-sdk";
 import type { TransportationEvent, AutonomyLevel, RiskTolerance, ObjectKind } from "./types";
 import { parseTimeToMin } from "./world";
+import { getZai } from "@/lib/zai";
 
 const SYSTEM_PROMPT = `You are ORYXX's intent parser. You convert a user's natural-language transportation request into a STRICT JSON object representing a Transportation Event.
 
@@ -51,7 +51,7 @@ export async function parseIntent(raw: string): Promise<ParseResult> {
   if (!trimmed) return { event: heuristicParse(""), parsedBy: "heuristic" };
 
   try {
-    const zai = await ZAI.create();
+    const zai = await getZai();
     const completion = await zai.chat.completions.create({
       messages: [
         { role: "assistant", content: SYSTEM_PROMPT },

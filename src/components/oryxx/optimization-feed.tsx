@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { io, type Socket } from "socket.io-client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +18,7 @@ import {
   RefreshCw,
   Bell,
   Loader2,
+  CheckCircle2,
 } from "lucide-react";
 import type { OptimizationEvent, Plan, TransportationEvent } from "@/lib/oryxx/types";
 
@@ -51,57 +51,75 @@ export function OptimizationFeed({
   const [events, setEvents] = useState<OptimizationEvent[]>([]);
   const [watching, setWatching] = useState(false);
   const [active, setActive] = useState(false);
-  const socketRef = useRef<Socket | null>(null);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const esRef = useRef<EventSource | null>(null);
+  const startRef = useRef<number>(0);
 
-  // (re)connect on mount
+  const cleanup = () => {
+    if (esRef.current) {
+      esRef.current.close();
+      esRef.current = null;
+    }
+  };
+
   useEffect(() => {
-    const sock = io("/?XTransformPort=3003", {
-      transports: ["websocket", "polling"],
-      forceNew: true,
-      reconnection: true,
-      reconnectionAttempts: 8,
-      reconnectionDelay: 1200,
-      timeout: 10000,
-    });
-    socketRef.current = sock;
-
-    sock.on("connect", () => setConnected(true));
-    sock.on("disconnect", () => setConnected(false));
-    sock.on("connect_error", () => setConnected(false));
-
-    sock.on("optimizer:started", () => {
-      setActive(true);
-    });
-    sock.on("optimizer:stopped", () => {
-      setActive(false);
-    });
-    sock.on("optimizer:event", (ev: OptimizationEvent) => {
-      setEvents((prev) => [ev, ...prev].slice(0, 40));
-    });
-
-    return () => {
-      sock.disconnect();
-    };
+    return () => cleanup();
   }, []);
 
   const subscribe = () => {
-    const sock = socketRef.current;
-    if (!sock || !connected || !plan || !event) return;
+    if (!plan || !event) return;
+    cleanup();
     setEvents([]);
-    sock.emit("subscribe", {
+    setDone(false);
+    setError(null);
+    startRef.current = Date.now();
+
+    const params = new URLSearchParams({
+      start: String(startRef.current),
       planId: plan.id,
-      baseCost: plan.totalCost,
+      baseCost: String(plan.totalCost),
       arrive: plan.arrive,
-      latestArrival: event.latestArrival,
-      usesLatentSupply: plan.usesLatentSupply,
-      autonomy: event.autonomy,
-      watchMode: watching,
+      latestArrival: event.latestArrival ?? "",
+      usesLatentSupply: plan.usesLatentSupply ? "1" : "0",
+      autonomy: String(event.autonomy),
+      watchMode: watching ? "1" : "0",
     });
+    const es = new EventSource(`/api/oryxx/stream?${params}`);
+    esRef.current = es;
+
+    setConnected(true);
+    setActive(true);
+
+    es.addEventListener("optimizer", (e: MessageEvent) => {
+      try {
+        const ev: OptimizationEvent = JSON.parse(e.data);
+        setEvents((prev) => [ev, ...prev].slice(0, 40));
+      } catch {}
+    });
+    es.addEventListener("done", () => {
+      setDone(true);
+      setActive(false);
+      cleanup();
+    });
+    es.onerror = () => {
+      // EventSource auto-reconnects unless we close it. If we've already
+      // finished, treat the disconnect as graceful.
+      if (done) {
+        cleanup();
+        setConnected(false);
+        setActive(false);
+        return;
+      }
+      setError("Stream interrupted — ORYXX is reconnecting…");
+      // let EventSource retry; if it fails repeatedly it'll stay in error state
+    };
   };
 
   const stop = () => {
-    socketRef.current?.emit("unsubscribe");
+    cleanup();
     setActive(false);
+    setConnected(false);
   };
 
   const noPlan = !plan;
@@ -115,6 +133,11 @@ export function OptimizationFeed({
           {active && (
             <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
               <Radio className="mr-1 h-3 w-3 animate-pulse" /> monitoring
+            </Badge>
+          )}
+          {done && (
+            <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 className="mr-1 h-3 w-3" /> cycle complete
             </Badge>
           )}
         </div>
@@ -154,7 +177,7 @@ export function OptimizationFeed({
             <Button
               size="sm"
               onClick={subscribe}
-              disabled={!connected || noPlan || active}
+              disabled={noPlan || active}
               className="h-7 bg-emerald-600 text-[11px] hover:bg-emerald-700"
             >
               {active ? (
@@ -176,15 +199,20 @@ export function OptimizationFeed({
             latent-supply opportunities and re-optimize it.
           </p>
         )}
+        {error && (
+          <p className="text-[11px] text-amber-600">{error}</p>
+        )}
 
         <ScrollArea className="h-64 w-full rounded-md border">
           <div className="space-y-1.5 p-2">
             {events.length === 0 ? (
               <div className="flex h-56 flex-col items-center justify-center text-center text-[11px] text-muted-foreground">
                 <Activity className="mb-1 h-5 w-5 opacity-40" />
-                {connected
-                  ? "No events yet. ORYXX will stream price changes, latent-supply matches, traffic incidents, and re-optimizations here."
-                  : "Connecting to the ORYXX optimizer service…"}
+                {active
+                  ? "Listening for price changes, latent-supply matches, traffic incidents, and re-optimizations…"
+                  : connected
+                  ? "Ready to monitor."
+                  : "Click “Monitor selected plan” to start the live feed."}
               </div>
             ) : (
               events.map((ev) => {

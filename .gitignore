@@ -52,3 +52,7 @@ prompt
 server.log
 # Skills directory
 /skills/
+# ORYXX mini-service artifacts
+mini-services/*/node_modules/
+mini-services/*/service.log
+mini-services/*/.env*
