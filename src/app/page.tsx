@@ -13,16 +13,21 @@ import {
   ShieldCheck,
   Loader2,
   Sparkles,
+  FlaskConical,
 } from "lucide-react";
 import { AuthGate } from "@/components/auth/auth-gate";
 import { UserMenu } from "@/components/auth/user-menu";
 import { WaitlistAdmin } from "@/components/auth/waitlist-admin";
 import { OryxConsole } from "@/components/oryxx/oryx-console";
+import { MarketSimulator } from "@/components/oryxx/market-simulator";
+
+type View = "solver" | "market";
 
 export default function Home() {
   const { data: session, status } = useSession();
   const [authOpen, setAuthOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [view, setView] = useState<View>("solver");
 
   const isAuthenticated = status === "authenticated";
   const isAdmin = (session?.user as any)?.role === "admin";
@@ -93,7 +98,28 @@ export default function Home() {
               <WaitlistAdmin />
             </div>
           )}
-          <OryxConsole />
+          {/* View switcher */}
+          <div className="mx-auto w-full max-w-6xl px-4 pt-4">
+            <div className="inline-flex rounded-lg border bg-muted/30 p-0.5">
+              <button
+                onClick={() => setView("solver")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  view === "solver" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Navigation className="h-3.5 w-3.5" /> Intent Solver
+              </button>
+              <button
+                onClick={() => setView("market")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  view === "market" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <FlaskConical className="h-3.5 w-3.5" /> Market Simulator
+              </button>
+            </div>
+          </div>
+          {view === "solver" ? <OryxConsole /> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div>}
         </>
       ) : (
         <UnauthenticatedLanding onSignIn={() => setAuthOpen(true)} />

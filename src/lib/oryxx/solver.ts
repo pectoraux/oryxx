@@ -127,6 +127,13 @@ function pickRepresentative(segs: SupplySegment[]): SupplySegment[] {
 }
 
 // Materialize a candidate into a concrete itinerary aligned to the time window.
+//
+// TEMPORAL FEASIBILITY (Defect 1): for any connecting scheduled segment
+// (transit/carpool with a scheduledDeparture), the (effective) scheduled
+// departure MUST be at or after the previous segment's arrival + transfer pad.
+// If the scheduled departure is strictly before previousArrive + transferPad,
+// the connection is infeasible and we return null. Non-scheduled (rideshare/walk)
+// segments keep the forward-push behavior (they leave as soon as you're ready).
 function materialize(
   cand: Candidate,
   event: TransportationEvent,
@@ -143,22 +150,43 @@ function materialize(
     const fromHub = hubById(s.from) ?? (i === 0 ? origin : dest);
     const toHub = hubById(s.to) ?? dest;
 
-    let depart = cursor;
-    // align to schedule if transit/carpool
+    const transferPad = i === 0 ? 0 : TRANSFER_PENALTY_MIN;
+    // previousArrive for i>0 is the cursor (cursor is set to the previous
+    // segment's arrive at the end of each iteration).
+    const previousArrive = i === 0 ? null : cursor;
+
+    let depart: number;
     if (s.scheduledDeparture) {
       const sd = parseTimeToMin(s.scheduledDeparture);
       if (sd != null) {
-        // pick the next scheduled departure at/after cursor (within 60 min, else use cursor)
+        // existing schedule-alignment logic: pick the next scheduled departure
+        // at/after cursor (within 60 min, else use cursor as ad-hoc fallback).
         if (sd >= cursor) depart = sd;
-        else if (sd + 60 >= cursor) depart = sd + 60; // loosely, next cycle
+        else if (sd + 60 >= cursor) depart = sd + 60; // next cycle
         else depart = cursor; // scheduled NPD too far off; treat as ad-hoc
+
+        // TEMPORAL FEASIBILITY — reject if the connection cannot be caught:
+        // (a) the literal scheduled departure is strictly before previousArrive + transferPad
+        //     (catches the "08:10 departs, 08:12 arrives" phantom-cycle case), AND
+        // (b) the effective aligned departure is strictly before previousArrive + transferPad
+        //     (defensive: never trust a connection that gives less than the pad).
+        if (i > 0 && previousArrive != null) {
+          if (sd < previousArrive + transferPad) return null;
+          if (depart < previousArrive + transferPad) return null;
+        }
+      } else {
+        // scheduledDeparture present but unparseable — fall back to ad-hoc.
+        depart = cursor + transferPad;
       }
+    } else {
+      // non-scheduled (rideshare/walk): forward-push — leaves as soon as you're
+      // ready, i.e. previousArrive + transferPad.
+      depart = cursor + transferPad;
     }
-    // respect earliest departure on first leg
+
+    // respect earliest departure on first leg (preserve leg-0 enforcement)
     if (i === 0 && depart < earliest) depart = earliest;
 
-    const transferPad = i === 0 ? 0 : TRANSFER_PENALTY_MIN;
-    depart = depart + transferPad;
     const arrive = depart + s.baseDurationMin;
 
     out.push({
@@ -213,8 +241,15 @@ function normCdf(x: number): number {
 }
 
 // Score & build a Plan from materialized segments. ---------------------------
+//
+// Defect 2: confidence is grounded in REAL data freshness (SupplySegment.
+// dataFreshnessMin) rather than a synthetic proxy. ItinerarySegment does not
+// carry dataFreshnessMin (we deliberately do not extend types.ts beyond the
+// single syntheticWorld addition), so the original SupplySegments are passed
+// in alongside and used for the freshness computation.
 function buildPlan(
   segs: ItinerarySegment[],
+  supplySegs: SupplySegment[],
   event: TransportationEvent,
   tag: Plan["tag"] | null,
 ): Plan {
@@ -240,12 +275,18 @@ function buildPlan(
     onTime = round2(Math.max(0.05, Math.min(0.999, normCdf(slack / Math.max(sigma, 1)))));
   }
 
-  // confidence: penalize stale data, high variance, many transfers, latent supply uncertainty
-  const avgFresh = avg(segs.map((s) => 2)); // proxy; real impl uses dataFreshnessMin
+  // confidence: penalize stale data, high variance, many transfers, latent supply uncertainty.
+  // Defect 2: avgFresh is the REAL average of SupplySegment.dataFreshnessMin
+  // (no longer the fake `2` proxy). Staler data → larger freshnessPenalty →
+  // lower confidence.
+  const avgFresh = avg(supplySegs.map((s) => s.dataFreshnessMin));
   const transferPenalty = transfers * 0.04;
   const variancePenalty = Math.min(0.25, sigma / 60);
   const latentPenalty = segs.some((s) => s.isLatentSupply) ? 0.06 : 0;
-  const confidence = round2(Math.max(0.4, Math.min(0.98, 0.95 - transferPenalty - variancePenalty - latentPenalty + avgFresh * 0.001)));
+  const freshnessPenalty = Math.min(0.3, Math.max(0, avgFresh / 30));
+  const confidence = round2(
+    Math.max(0.4, Math.min(0.98, 0.95 - transferPenalty - variancePenalty - latentPenalty - freshnessPenalty)),
+  );
 
   const score = expectedUtility({
     cost: totalCost,
@@ -281,6 +322,9 @@ function buildPlan(
     confidence,
     tradeoffNote: "",
     usesLatentSupply: segs.some((s) => s.isLatentSupply),
+    // Defect 2: the world graph in this prototype is synthetic. Surfaced so
+    // the UI / API consumers can never mistake this for real supply data.
+    syntheticWorld: true,
   };
 }
 
@@ -338,7 +382,7 @@ function rankPlans(
   for (const c of cands) {
     const segs = materialize(c, event, origin, dest);
     if (!segs || segs.length === 0) continue;
-    const plan = buildPlan(segs, event, null);
+    const plan = buildPlan(segs, c.segments, event, null);
     // hard constraints
     if (event.constraints.budget && plan.totalCost > event.constraints.budget) continue;
     if (event.constraints.maxTransfers != null && plan.transfers > event.constraints.maxTransfers) continue;
@@ -383,99 +427,175 @@ function selectCanonical(sorted: Plan[]): Plan[] {
 }
 
 // Flexibility offers (§10: time is an optimization variable) ----------------
+//
+// Defect 3: every offer with a counterfactual action (shift_time / allow_transfer
+// / share_ride) is now backed by an ACTUAL re-solve of the modified event via
+// the injected `reSolve` function. deltaCost is the REAL difference between the
+// re-solved best plan and the current best plan — no fabricated formula.
+// `book_earlier` and `wait_watch` cannot be counterfactual in a synthetic world
+// (no advance-purchase supply, no real price-feeds), so they are surfaced as
+// honestly-labelled informational offers with no fabricated number.
+//
+// Recursion boundary: `reSolve` MUST be wired to `solveCore`, NOT to
+// `solveTransportationEvent` (which itself calls buildFlexibilityOffers).
+// `solveCore` returns sorted plans WITHOUT computing flexibility offers, so a
+// re-solve cannot recurse into another buildFlexibilityOffers call.
+
+export type ReSolveFn = (
+  modifiedEvent: TransportationEvent,
+) => { totalCost: number; confidence: number } | null;
+
+// Local time-shift helper (mirrors src/components/oryxx/oryx-console.tsx's
+// addMinutes, kept local to solver.ts so the dependency boundary stays clean).
+function addMinutesToTime(hhmm: string, deltaMin: number): string {
+  const m = parseTimeToMin(hhmm);
+  if (m == null) return hhmm;
+  const next = ((m + deltaMin) % 1440 + 1440) % 1440;
+  return minToTime(next);
+}
+
 function buildFlexibilityOffers(
   best: Plan | undefined,
   cheapest: Plan | undefined,
   event: TransportationEvent,
+  reSolve: ReSolveFn,
 ): FlexibilityOffer[] {
   const offers: FlexibilityOffer[] = [];
   if (!best) return offers;
 
-  const preferred = parseTimeToMin(event.preferredDeparture ?? event.earliestDeparture) ?? 8 * 60;
-
-  // 1. shift time later (off-peak) — model dynamic pricing drop
-  const laterMin = 25;
-  const saveLater = Math.round((best.totalCost * 0.12 + 2) * 10) / 10;
-  offers.push({
-    id: "flex-later",
-    kind: "shift_time",
-    title: `Leave ${laterMin} min later → save $${saveLater.toFixed(2)}`,
-    rationale: "Off-peak demand lowers dynamic rideshare pricing and improves transit frequency.",
-    deltaCost: -saveLater,
-    deltaEtaMin: laterMin,
-    newConfidence: Math.min(0.98, best.confidence + 0.02),
-    appliesToPlanId: best.id,
-  });
-
-  // 2. shift time earlier
-  const earlierMin = 20;
-  const saveEarlier = Math.round((best.totalCost * 0.08 + 1) * 10) / 10;
-  offers.push({
-    id: "flex-earlier",
-    kind: "shift_time",
-    title: `Leave ${earlierMin} min earlier → save $${saveEarlier.toFixed(2)} and arrive calmer`,
-    rationale: "Earlier departure avoids peak congestion and raises on-time probability.",
-    deltaCost: -saveEarlier,
-    deltaEtaMin: -earlierMin,
-    newConfidence: Math.min(0.99, best.confidence + 0.04),
-    appliesToPlanId: best.id,
-  });
-
-  // 3. allow one more transfer → cheaper
-  const currentMax = event.constraints.maxTransfers ?? 2;
-  const saveTransfer = Math.round((best.totalCost * 0.15 + 1.5) * 10) / 10;
-  offers.push({
-    id: "flex-transfer",
-    kind: "allow_transfer",
-    title: `Allow ${currentMax + 1} transfers → save $${saveTransfer.toFixed(2)}`,
-    rationale: "An extra transfer unlocks a cheaper transit+carpool combination.",
-    deltaCost: -saveTransfer,
-    deltaEtaMin: 8,
-    newConfidence: Math.max(0.5, best.confidence - 0.03),
-    appliesToPlanId: best.id,
-  });
-
-  // 4. share ride (carpool) if not already
-  if (!best.usesLatentSupply) {
-    const saveShare = Math.round((best.totalCost * 0.4 + 1) * 10) / 10;
+  // Helper: push a counterfactual offer only if the re-solve produced a strictly
+  // cheaper plan. deltaCost is the REAL delta (result.totalCost - best.totalCost).
+  const pushCounterfactual = (
+    id: string,
+    kind: FlexibilityOffer["kind"],
+    modified: TransportationEvent,
+    titleFor: (delta: number) => string,
+    rationale: string,
+    deltaEtaMin: number,
+  ): void => {
+    const r = reSolve(modified);
+    if (!r) return; // no feasible plan under modified constraint → omit
+    const delta = round2(r.totalCost - best.totalCost);
+    if (delta >= 0) return; // not beneficial → omit (counterfactual offers must be honest)
     offers.push({
-      id: "flex-share",
-      kind: "share_ride",
-      title: `Share a ride (carpool / latent supply) → save $${saveShare.toFixed(2)}`,
-      rationale: "Match with a pre-existing trip (NPD) that has spare capacity on a similar route.",
-      deltaCost: -saveShare,
-      deltaEtaMin: 5,
-      newConfidence: Math.max(0.5, best.confidence - 0.05),
+      id,
+      kind,
+      title: titleFor(delta),
+      rationale,
+      deltaCost: delta,
+      deltaEtaMin,
+      newConfidence: r.confidence,
       appliesToPlanId: best.id,
     });
+  };
+
+  // 1. shift time later (+25 min on earliest & preferred)
+  {
+    const laterMin = 25;
+    const modified: TransportationEvent = {
+      ...event,
+      earliestDeparture: addMinutesToTime(event.earliestDeparture, laterMin),
+      preferredDeparture: event.preferredDeparture
+        ? addMinutesToTime(event.preferredDeparture, laterMin)
+        : event.preferredDeparture,
+    };
+    pushCounterfactual(
+      "flex-later",
+      "shift_time",
+      modified,
+      (d) => `Leave ${laterMin} min later → save $${Math.abs(d).toFixed(2)}`,
+      "Off-peak demand lowers dynamic rideshare pricing and improves transit frequency. Re-solved against the modified time window.",
+      laterMin,
+    );
   }
 
-  // 5. book earlier (advance) — only if event is in future
-  const saveAdvance = Math.round((best.totalCost * 0.2) * 10) / 10;
+  // 2. shift time earlier (-20 min)
+  {
+    const earlierMin = 20;
+    const modified: TransportationEvent = {
+      ...event,
+      earliestDeparture: addMinutesToTime(event.earliestDeparture, -earlierMin),
+      preferredDeparture: event.preferredDeparture
+        ? addMinutesToTime(event.preferredDeparture, -earlierMin)
+        : event.preferredDeparture,
+    };
+    pushCounterfactual(
+      "flex-earlier",
+      "shift_time",
+      modified,
+      (d) => `Leave ${earlierMin} min earlier → save $${Math.abs(d).toFixed(2)}`,
+      "Earlier departure avoids peak congestion and raises on-time probability. Re-solved against the modified time window.",
+      -earlierMin,
+    );
+  }
+
+  // 3. allow one more transfer
+  {
+    const currentMax = event.constraints.maxTransfers ?? 2;
+    const modified: TransportationEvent = {
+      ...event,
+      constraints: { ...event.constraints, maxTransfers: currentMax + 1 },
+    };
+    pushCounterfactual(
+      "flex-transfer",
+      "allow_transfer",
+      modified,
+      (d) => `Allow ${currentMax + 1} transfers → save $${Math.abs(d).toFixed(2)}`,
+      "An extra transfer unlocks a cheaper transit+carpool combination. Re-solved with the relaxed constraint.",
+      8, // informational ETA delta estimate
+    );
+  }
+
+  // 4. share ride — re-weight objectives to surface latent supply (NPDs)
+  if (!best.usesLatentSupply) {
+    const modified: TransportationEvent = {
+      ...event,
+      objectives: { ...event.objectives, cost: 1, comfort: 0.15, safety: 0.5 },
+    };
+    pushCounterfactual(
+      "flex-share",
+      "share_ride",
+      modified,
+      (d) => `Share a ride (carpool / latent supply) → save $${Math.abs(d).toFixed(2)}`,
+      "Re-weighted to surface latent supply (NPD) — a pre-existing trip with spare capacity on a similar route. Re-solved with the modified priorities.",
+      5, // informational ETA delta estimate
+    );
+  }
+
+  // 5. book earlier — INFORMATIONAL ONLY (no counterfactual possible in a
+  // synthetic world: there is no advance-purchase supply to re-solve against).
+  // No fabricated dollar amount.
   offers.push({
     id: "flex-book",
     kind: "book_earlier",
-    title: `Book 3 days earlier → expected savings $${saveAdvance.toFixed(2)}`,
-    rationale: "Advance booking unlocks contracted capacity and avoids surge windows.",
-    deltaCost: -saveAdvance,
-    deltaEtaMin: 0,
-    newConfidence: Math.min(0.99, best.confidence + 0.03),
-    appliesToPlanId: best.id,
-  });
-
-  // 6. watch mode estimate
-  const low = Math.round((best.totalCost * 0.78) * 100) / 100;
-  const high = Math.round((best.totalCost * 0.92) * 100) / 100;
-  offers.push({
-    id: "flex-watch",
-    kind: "wait_watch",
-    title: `Let ORYXX search for 24h → estimated $${low.toFixed(2)}–$${high.toFixed(2)}`,
-    rationale: "Continuous optimization may surface a latent-supply match or a price dip.",
-    deltaCost: -(Math.round((best.totalCost - low) * 100) / 100),
+    title: `Book 3 days earlier → estimated savings (requires real supply contracts; not measurable in the synthetic world)`,
+    rationale:
+      "Advance booking unlocks contracted capacity and avoids surge windows — but ORYXX's prototype world has no advance-purchase supply to re-solve against, so no counterfactual dollar amount is reported.",
+    deltaCost: 0,
     deltaEtaMin: 0,
     newConfidence: best.confidence,
     appliesToPlanId: best.id,
   });
+
+  // 6. wait & watch — INFORMATIONAL simulated estimate, clearly labelled.
+  const low = round2(best.totalCost * 0.78);
+  const high = round2(best.totalCost * 0.92);
+  offers.push({
+    id: "flex-watch",
+    kind: "wait_watch",
+    title: `Let ORYXX search for 24h → simulated estimate $${low.toFixed(2)}–$${high.toFixed(2)}`,
+    rationale:
+      "Continuous optimization may surface a latent-supply match or a price dip. This is a simulation estimate, not a counterfactual solve — the synthetic world has no real-time price feeds.",
+    deltaCost: round2(low - best.totalCost),
+    deltaEtaMin: 0,
+    newConfidence: best.confidence,
+    appliesToPlanId: best.id,
+  });
+
+  // Silence the unused `cheapest` parameter lint if any — kept in the signature
+  // for API stability; the cheapest plan currently informs future
+  // counterfactuals but isn't required for the four we surface today.
+  void cheapest;
 
   return offers;
 }
@@ -488,6 +608,37 @@ function buildUnknowns(event: TransportationEvent, originSynthetic: boolean, des
   u.push("Real-time traffic, weather, and incident feeds are simulated in this prototype.");
   if (event.objectives.emissions > 0.6) u.push("Emissions factors are coarse estimates; real ORYXX would use verified EF datasets.");
   return u;
+}
+
+// --- Core solver (no flexibility, no fallback synthesis) ---------------------
+// Defect 3 (recursion boundary): the public `solveTransportationEvent` calls
+// buildFlexibilityOffers, and buildFlexibilityOffers needs to re-solve modified
+// events via `reSolve`. To prevent infinite recursion (reSolve → solve →
+// buildFlexibilityOffers → reSolve → ...), `reSolve` is wired to `solveCore`,
+// which returns ONLY sorted plans — it does NOT compute flexibility offers
+// and does NOT synthesise a fallback plan. Both the top-level public solve and
+// the counterfactual re-solve go through solveCore.
+function solveCore(event: TransportationEvent): Plan[] {
+  const o = resolveHub(event.origin);
+  const d = resolveHub(event.destination);
+  const { plans: sorted } = rankPlans(event, o.hub, d.hub);
+  return sorted;
+}
+
+// Synthesise a minimal direct rideshare plan when no feasible plan exists under
+// the constraints, so the UX always has something to show.
+function synthesizeFallbackPlan(event: TransportationEvent): Plan | null {
+  const o = resolveHub(event.origin);
+  const d = resolveHub(event.destination);
+  const seed = candidateSeed(o.hub.id, d.hub.id);
+  const direct = supplyBetween(o.hub, d.hub, seed).find((s) => s.mode === "rideshare");
+  if (!direct) return null;
+  const segs = materialize({ segments: [direct] }, event, o.hub, d.hub);
+  if (!segs) return null;
+  const plan = buildPlan(segs, [direct], event, "best_overall");
+  plan.id = "plan-0";
+  plan.headline = "Direct rideshare (no other feasible plan found under constraints)";
+  return plan;
 }
 
 // --- Public entry point -----------------------------------------------------
@@ -505,22 +656,29 @@ export function solveTransportationEvent(event: TransportationEvent): {
 } {
   const o = resolveHub(event.origin);
   const d = resolveHub(event.destination);
-  const { plans: sorted } = rankPlans(event, o.hub, d.hub);
+  const sorted = solveCore(event);
+
+  // reSolve: counterfactual re-solve of a modified event. Returns the
+  // totalCost + confidence of the modified event's best plan, or null if no
+  // feasible plan exists under the modified constraints. Critically: this
+  // calls solveCore (NOT solveTransportationEvent), so it cannot recurse into
+  // buildFlexibilityOffers.
+  const reSolve: ReSolveFn = (modifiedEvent) => {
+    const plans = solveCore(modifiedEvent);
+    if (plans.length === 0) return null;
+    const p = plans[0];
+    return { totalCost: p.totalCost, confidence: p.confidence };
+  };
 
   if (sorted.length === 0) {
     // synthesise a minimal direct rideshare plan so the UX always has something
-    const seed = candidateSeed(o.hub.id, d.hub.id);
-    const direct = supplyBetween(o.hub, d.hub, seed).find((s) => s.mode === "rideshare");
-    if (direct) {
-      const segs = materialize({ segments: [direct] }, event, o.hub, d.hub)!;
-      const plan = buildPlan(segs, event, "best_overall");
-      plan.id = "plan-0";
-      plan.headline = "Direct rideshare (no other feasible plan found under constraints)";
-      const offers = buildFlexibilityOffers(plan, plan, event);
+    const plan = synthesizeFallbackPlan(event);
+    if (plan) {
+      const offers = buildFlexibilityOffers(plan, plan, event, reSolve);
       return {
         plans: [plan],
         flexibilityOffers: offers,
-        watchEstimate: { low: Math.round(plan.totalCost * 0.78 * 100) / 100, high: Math.round(plan.totalCost * 0.92 * 100) / 100, hours: 24 },
+        watchEstimate: { low: round2(plan.totalCost * 0.78), high: round2(plan.totalCost * 0.92), hours: 24 },
         unknowns: buildUnknowns(event, o.synthetic, d.synthetic),
         originSynthetic: o.synthetic,
         destSynthetic: d.synthetic,
@@ -538,9 +696,11 @@ export function solveTransportationEvent(event: TransportationEvent): {
   const canonical = selectCanonical(sorted);
   const best = canonical[0];
   const cheapest = canonical.find((p) => p.tag === "cheapest") ?? best;
-  const offers = buildFlexibilityOffers(best, cheapest, event);
-  const low = Math.round((best.totalCost * 0.78) * 100) / 100;
-  const high = Math.round((best.totalCost * 0.92) * 100) / 100;
+  // Defect 3: buildFlexibilityOffers now takes the reSolve callback so each
+  // counterfactual offer reflects a real re-solve, not a fabricated formula.
+  const offers = buildFlexibilityOffers(best, cheapest, event, reSolve);
+  const low = round2(best.totalCost * 0.78);
+  const high = round2(best.totalCost * 0.92);
 
   // attach tradeoff notes
   for (const p of canonical) {

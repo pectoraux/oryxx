@@ -176,6 +176,10 @@ export interface Plan {
   confidence: number; // 0..1
   tradeoffNote: string;
   usesLatentSupply: boolean;
+  // Defect 2: true when this plan was produced against the synthetic world
+  // graph (prototype). Lets API consumers / UI avoid presenting synthetic
+  // supply data as if it were contracted real-world capacity.
+  syntheticWorld: boolean;
 }
 
 export interface SolveResponse {
