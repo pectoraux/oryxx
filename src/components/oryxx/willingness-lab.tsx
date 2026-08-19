@@ -99,6 +99,7 @@ export function WillingnessLab() {
           <EconomicMetricsCard result={result} />
           <ObservedVsAssumedCard result={result} />
           <BiasesCard result={result} />
+          <W3PilotStatusCard />
           <DoesNotProveCard result={result} />
         </motion.div>
       )}
@@ -326,12 +327,94 @@ function DoesNotProveCard({ result }: { result: WillingnessExperimentResult }) {
         <span className="flex items-center gap-1.5 text-sm font-semibold text-rose-800 dark:text-rose-200"><ShieldAlert className="h-4 w-4" /> What this does NOT prove</span>
       </div>
       <div className="space-y-1.5 px-4 py-3 text-[11px] text-muted-foreground">
-        <p>· It does <strong>NOT</strong> prove drivers would accept pooled passengers. W2 shows availability, not acceptance.</p>
+        <p>· It does <strong>NOT</strong> prove drivers would accept pooled passengers. W2a shows not-on-trip intervals, not acceptance.</p>
         <p>· It does <strong>NOT</strong> prove the marketplace is economically viable. Break-even shows ~100% acceptance needed at $3 comp.</p>
         <p>· It does <strong>NOT</strong> prove execution reliability. Execution (70%) and completion (85%) rates are assumed.</p>
         <p className="pt-1 font-medium text-foreground">
-          The single missing measurement: W3 (revealed acceptance) — present a real pooled-trip offer to real drivers and record accept/decline. Without W3, the marketplace thesis is not justified.
+          The single missing measurement: W3 (revealed acceptance) — present a real pooled-trip offer to real drivers and record accept/decline. The field-experiment API is instrumented at /api/oryxx/willingness/experiment. Without W3, the marketplace thesis is not justified.
         </p>
+      </div>
+    </Card>
+  );
+}
+
+function W3PilotStatusCard() {
+  return (
+    <Card className="py-0 border-violet-500/30">
+      <div className="border-t bg-violet-500/5 px-4 py-2.5">
+        <span className="flex items-center gap-1.5 text-sm font-semibold text-violet-800 dark:text-violet-200">
+          <Info className="h-4 w-4" /> W3 Pilot — field-experiment instrumentation status
+        </span>
+      </div>
+      <div className="space-y-2 px-4 py-3 text-[11px] text-muted-foreground">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">State machine</p>
+            <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-700 dark:text-emerald-300">IMPLEMENTED</Badge>
+            <p className="mt-0.5 text-[9px]">OFFER_CREATED → PRESENTED → VIEWED → ACCEPTED → COMPLETED</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">Preregistration</p>
+            <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-700 dark:text-emerald-300">IMPLEMENTED</Badge>
+            <p className="mt-0.5 text-[9px]">Immutable spec: hypothesis, design, stopping rule</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">Randomization</p>
+            <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-700 dark:text-emerald-300">IMPLEMENTED</Badge>
+            <p className="mt-0.5 text-[9px]">Deterministic treatment assignment (balanced)</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">Safety validator</p>
+            <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-700 dark:text-emerald-300">IMPLEMENTED</Badge>
+            <p className="mt-0.5 text-[9px]">max detour, max time, min comp enforced</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">Sample-size calc</p>
+            <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-700 dark:text-emerald-300">IMPLEMENTED</Badge>
+            <p className="mt-0.5 text-[9px]">Two-proportion z-test, alpha=0.05, power=0.80</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">Marketplace decision</p>
+            <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-700 dark:text-emerald-300">IMPLEMENTED</Badge>
+            <p className="mt-0.5 text-[9px]">Per-cell break-even + viability check</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">W3 evidence</p>
+            <Badge variant="outline" className="border-rose-500/40 text-[9px] text-rose-700 dark:text-rose-300">ZERO</Badge>
+            <p className="mt-0.5 text-[9px]">No provider has accepted a real offer</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-muted-foreground">W4 evidence</p>
+            <Badge variant="outline" className="border-rose-500/40 text-[9px] text-rose-700 dark:text-rose-300">ZERO</Badge>
+            <p className="mt-0.5 text-[9px]">No pooled trip has been completed</p>
+          </div>
+        </div>
+        <Separator className="my-2" />
+        <div className="rounded bg-amber-500/5 px-3 py-2">
+          <p className="text-[10px] font-medium text-amber-700 dark:text-amber-300">
+            PILOT STATUS: PREREGISTERED — NOT ACTIVE
+          </p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            The experiment is instrumented and ready to deploy but has NOT been activated. No real providers have been contacted.
+            Activation requires explicit external authorization + ethical review. The API endpoints at
+            <code className="mx-1 rounded bg-muted px-1">/api/oryxx/willingness/experiment</code>
+            <code className="mx-1 rounded bg-muted px-1">/api/oryxx/willingness/response</code>
+            <code className="mx-1 rounded bg-muted px-1">/api/oryxx/willingness/results</code>
+            implement the full state machine.
+          </p>
+        </div>
+        <div className="mt-2 rounded bg-muted/30 px-3 py-2">
+          <p className="text-[10px] font-medium text-foreground">Evidence integrity guarantees:</p>
+          <ul className="mt-1 space-y-0.5">
+            <li className="text-[10px]">· Only PROVIDER_ACCEPTED state can create W3 evidence (state machine enforced)</li>
+            <li className="text-[10px]">· Only TRIP_COMPLETED state can create W4 evidence</li>
+            <li className="text-[10px]">· W2a observations CANNOT transition to W3 without a real provider decision</li>
+            <li className="text-[10px]">· Invalid state transitions are rejected by the API</li>
+            <li className="text-[10px]">· Provider IDs are pseudonymous (random hex, no PII)</li>
+            <li className="text-[10px]">· Unsafe offers are rejected before presentation (max detour, max time, min comp)</li>
+            <li className="text-[10px]">· Preregistration is immutable once experiment is active</li>
+          </ul>
+        </div>
       </div>
     </Card>
   );

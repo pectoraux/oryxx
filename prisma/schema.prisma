@@ -47,13 +47,20 @@ model AcceptanceExperiment {
   id          String   @id @default(cuid())
   name        String
   description String
-  status      String   @default("designed") // designed | recruiting | active | completed | not_deployable
+  status      String   @default("preregistered") // preregistered | active | completed | abandoned
   maxDetourKm Float    @default(5.0)
+  maxExtraTimeMin Float @default(20.0)
   minCompensation Float @default(1.0)
   requiresConsent Boolean @default(true)
   consentText String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // preregistration (immutable once active)
+  hypothesis  String?
+  sampleTarget Int    @default(100)
+  primaryOutcome String @default("W3_acceptance_rate")
+  stoppingRule String?
+  randomizationSeed Int @default(42)
+  isImmutable Boolean  @default(false)
+  preregisteredAt String?
   responses   ProviderResponse[]
 
   @@index([status])
@@ -75,18 +82,27 @@ model ProviderResponse {
   originName      String
   destName        String
   hourOfDay       Int
+  // state machine
+  state           String   @default("OFFER_CREATED") // see pilot.ts VALID_TRANSITIONS
   // decision
-  decision        String   // accept | decline | not_available | not_eligible | ignore
+  decision        String?  // accept | decline | not_available | ignore (null until responded)
   // execution (if accepted)
   executed        Boolean?
   completed        Boolean?
   executionFailureReason String?
-  // evidence tier
-  evidenceTier    String   // W3 if accepted, W4 if completed
+  // evidence tier (computed from state)
+  evidenceTier    String   @default("W0") // W2a | W2b | W3 | W4
+  // consent
   consentObtained Boolean  @default(false)
+  // timing
+  offerPresentedAt String?
+  providerViewedAt String?
+  decisionAt      String?
   timestamp       DateTime @default(now())
 
   @@index([experimentId])
   @@index([providerId])
   @@index([decision])
+  @@index([state])
+  @@index([evidenceTier])
 }
