@@ -52,15 +52,19 @@ export function evidenceTierForState(state: ExperimentState): "W2a" | "W2b" | "W
     case "PROVIDER_VIEWED":
       return "W2a"; // offer exists but no provider response yet
     case "PROVIDER_ACCEPTED":
-      return "W3"; // ← W3 evidence
+      return "W3"; // ← W3 evidence (provider accepted a REAL offer)
     case "TRIP_STARTED":
       return "W3"; // accepted + started, but not completed
     case "TRIP_COMPLETED":
-      return "W4"; // ← W4 evidence
+      return "W4"; // ← W4 evidence (trip completed)
     case "PROVIDER_DECLINED":
+      return "W0"; // provider declined — no willingness evidence
     case "PROVIDER_UNAVAILABLE":
+      return "W0"; // NOT W2b — "not available" is evidence of the OPPOSITE of availability.
+      // W2b requires a POSITIVE confirmed-availability signal (e.g. driver actively
+      // set status to "available for offers"). "Not available" is not that.
     case "PROVIDER_IGNORED":
-      return "W0"; // no willingness evidence from a decline
+      return "W0"; // no response — no willingness evidence
   }
   return "W0";
 }
