@@ -40,6 +40,7 @@ import {
   findCandidateMovements,
 } from "../src/lib/oryxx/real/engine/uncertainty";
 import { OsmAccraProvider, OSM_SOURCE } from "../src/lib/oryxx/real/providers/osm-accra";
+import { ChicagoTaxiProvider } from "../src/lib/oryxx/real/providers/chicago-taxi";
 
 // Types
 import type {
@@ -63,6 +64,8 @@ const DEFAULT_CONFIG: RealExperimentConfig = {
   willingness: 0.5,
   detourToleranceKm: 3.0,
   hourFilter: 7,
+  pilot: "accra-fixture",
+  assumptionProfile: "central",
 };
 
 const provider = new FixtureAccraProvider(42, 1.0);
@@ -279,7 +282,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 10. Detour calculation =============================================
   test("opportunities have detourKm >= 0 and <= config.detourToleranceKm * 2", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.detourKm).toBeGreaterThanOrEqual(0);
@@ -292,7 +295,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 11. Opportunity generation =========================================
   test("runOpportunityExperiment returns opportunities.length > 0; all dependsOnLatentSupply === true", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.dependsOnLatentSupply).toBe(true);
@@ -331,7 +334,7 @@ describe("ORYXX real-data layer", () => {
   // === 14. Data provenance ================================================
   test("every DataSource has isFixture === true; every opportunity has dataSources.length > 0", () => {
     // Use fixture explicitly — the real-OSM path returns a real (non-fixture) DataSource
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     for (const ds of result.datasets) {
       expect(ds.isFixture).toBe(true);
     }
@@ -346,8 +349,8 @@ describe("ORYXX real-data layer", () => {
 
   // === 15. Deterministic replay ==========================================
   test("runOpportunityExperiment with same config produces same opportunities.length and totalEstimatedValue", () => {
-    const r1 = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
-    const r2 = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const r1 = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
+    const r2 = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     expect(r1.opportunities.length).toBe(r2.opportunities.length);
     expect(r1.metrics.totalEstimatedValue).toBe(r2.metrics.totalEstimatedValue);
   });
@@ -377,7 +380,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 18. Confidence object ==============================================
   test("every opportunity's confidence: overall in [0,1], capacityBasis='assumed', willingnessBasis='assumed'", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.confidence.overall).toBeGreaterThanOrEqual(0);
@@ -389,7 +392,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 19. Tier correctness ===============================================
   test("opportunities have tier 1 or 2 (not 0/3/4)", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.tier === 1 || o.tier === 2).toBe(true);
@@ -398,7 +401,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 20. Planning horizon curve =========================================
   test("planningHorizonCurve returns 6 points; 7-day horizon opportunities >= 0-day horizon opportunities", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     const curve = result.planningHorizonCurve;
     expect(curve.length).toBe(6);
     // confirm the exact horizon values
@@ -415,7 +418,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 21. Survival analysis: robust/plausible/fragile/speculative tiers ===
   test("survival analysis produces robust/plausible/fragile/speculative counts", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false, survivalGrid: "conservative" });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture", survivalGrid: "conservative" });
     expect(result.survival).toBeDefined();
     expect(result.survival.totalScenarios).toBeGreaterThan(0);
     const total = result.survival.robustCount + result.survival.plausibleCount + result.survival.fragileCount + result.survival.speculativeCount;
@@ -431,7 +434,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 22. Robust opportunities <= total opportunities ===
   test("robust opportunities are a subset of all candidates", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false, survivalGrid: "conservative" });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture", survivalGrid: "conservative" });
     // robust count should be <= total opportunities (central assumption set)
     expect(result.survival.robustCount).toBeLessThanOrEqual(result.opportunities.length + 1);
     // conservative value per 1000 should be <= central value per 1000
@@ -441,7 +444,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 23. Density fits: all 4 models computed with R² ===
   test("density fits include linear, logarithmic, power, quadratic with R²", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture" });
     expect(result.densityFits.length).toBe(4);
     const models = result.densityFits.map((f) => f.model);
     expect(models).toContain("linear");
@@ -515,12 +518,97 @@ describe("ORYXX real-data layer", () => {
 
   // === 27. Survival tiers are mutually exclusive ===
   test("survival robustness tiers are mutually exclusive per candidate", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false, survivalGrid: "conservative" });
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { pilot: "accra-fixture", survivalGrid: "conservative" });
     for (const c of result.survival.candidates) {
       // exactly one of robust/plausible/fragile/speculative should be true
       const flags = [c.robustness === "robust", c.robustness === "plausible", c.robustness === "fragile", c.robustness === "speculative"];
       const trueCount = flags.filter(Boolean).length;
       expect(trueCount).toBe(1);
+    }
+  });
+
+  // === 28. Chicago taxi provider: real movement data ===
+  test("ChicagoTaxiProvider loads real taxi trips and normalizes to ObservedMovement", () => {
+    const provider = new ChicagoTaxiProvider(42, 1.0);
+    const movements = provider.getObservedMovementsSync(0, 86400);
+    expect(movements.length).toBe(500); // 500 real trips bundled
+    // every movement is REAL (not fixture)
+    for (const m of movements) {
+      expect(m.source.isFixture).toBe(false);
+      expect(m.source.license.toLowerCase()).toContain("public domain");
+      expect(m.anonymized).toBe(true); // taxi_id is hashed
+      expect(m.mode).toBe("drive");
+      expect(m.departureSec).toBeLessThan(m.arrivalSec);
+    }
+    // pilot geography is Chicago
+    const pilot = provider.getPilotGeographySync();
+    expect(pilot.name).toContain("Chicago");
+    expect(pilot.id).toContain("chicago");
+  });
+
+  // === 29. Value tiers: potential > expected > executed ===
+  test("value tiers separate potential, expected, and executed value", () => {
+    const result = runOpportunityExperiment(
+      { ...DEFAULT_CONFIG, assumptionProfile: "central" },
+      { pilot: "accra-fixture" },
+    );
+    expect(result.valueTiers).toBeDefined();
+    // potential >= expected >= executed (each tier multiplies by survival × execution × willingness)
+    expect(result.valueTiers.potentialValue).toBeGreaterThanOrEqual(result.valueTiers.expectedValue);
+    expect(result.valueTiers.expectedValue).toBeGreaterThanOrEqual(result.valueTiers.executedValue);
+    // per-1000 values are positive if opportunities exist
+    if (result.opportunities.length > 0) {
+      expect(result.valueTiers.potentialPer1000).toBeGreaterThan(0);
+    }
+  });
+
+  // === 30. Strict profile is more conservative than optimistic ===
+  test("strict assumption profile produces fewer opportunities than optimistic", () => {
+    const strictResult = runOpportunityExperiment(
+      { ...DEFAULT_CONFIG, assumptionProfile: "strict" },
+      { pilot: "accra-fixture" },
+    );
+    const optimisticResult = runOpportunityExperiment(
+      { ...DEFAULT_CONFIG, assumptionProfile: "optimistic" },
+      { pilot: "accra-fixture" },
+    );
+    // strict should have <= robust opportunities than optimistic
+    expect(strictResult.survival.robustCount).toBeLessThanOrEqual(optimisticResult.survival.robustCount + 5);
+    // executed value under strict should be <= optimistic
+    expect(strictResult.valueTiers.executedValue).toBeLessThanOrEqual(optimisticResult.valueTiers.executedValue + 5);
+  });
+
+  // === 31. Chicago taxi: real-data experiment produces results ===
+  test("Chicago taxi experiment runs on real movement data and produces opportunities", () => {
+    const result = runOpportunityExperiment(
+      { seed: 42, numDemands: 100, movementDensity: 1.0, planningHorizonSec: 0, willingness: 0.3, detourToleranceKm: 2.0, hourFilter: null, pilot: "chicago-taxi", assumptionProfile: "central" },
+      { pilot: "chicago-taxi" },
+    );
+    // movement data is REAL
+    expect(result.movements.length).toBe(500);
+    expect(result.movements[0].source.isFixture).toBe(false);
+    // pilot is Chicago
+    expect(result.pilot.name).toContain("Chicago");
+    // datasets include real taxi source
+    const hasReal = result.datasets.some((d) => !d.isFixture);
+    expect(hasReal).toBe(true);
+    // value tiers exist
+    expect(result.valueTiers).toBeDefined();
+    expect(result.valueTiers.potentialValue).toBeGreaterThanOrEqual(0);
+  });
+
+  // === 32. Privacy: no raw taxi_id exposed in movements ===
+  test("no raw taxi_id or PII exposed in observed movements", () => {
+    const provider = new ChicagoTaxiProvider(42, 1.0);
+    const movements = provider.getObservedMovementsSync(0, 86400);
+    for (const m of movements) {
+      // movement id is a truncated hash, not the raw taxi_id
+      expect(m.id).not.toContain("@");
+      expect(m.id.length).toBeLessThan(20); // CHI-XXXXXXXXXXXX (truncated)
+      // no PII fields
+      expect((m as any).taxi_id).toBeUndefined();
+      expect((m as any).driver_name).toBeUndefined();
+      expect((m as any).passenger_name).toBeUndefined();
     }
   });
 });

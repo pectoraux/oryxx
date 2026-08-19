@@ -24,8 +24,10 @@ export function RealLab() {
   const { toast } = useToast();
   const [numDemands, setNumDemands] = useState(200);
   const [movementDensity, setMovementDensity] = useState(1.0);
-  const [willingness, setWillingness] = useState(0.5);
+  const [willingness, setWillingness] = useState(0.3);
   const [detourTolerance, setDetourTolerance] = useState(2.0);
+  const [pilot, setPilot] = useState<"accra-fixture" | "accra-osm" | "chicago-taxi">("chicago-taxi");
+  const [assumptionProfile, setAssumptionProfile] = useState<"strict" | "central" | "optimistic">("strict");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<OpportunityExperimentResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +42,7 @@ export function RealLab() {
         body: JSON.stringify({
           numDemands, movementDensity, willingness,
           detourToleranceKm: detourTolerance, seed: 42, planningHorizonSec: 0,
+          pilot, assumptionProfile,
         }),
       });
       if (!res.ok) {
@@ -48,9 +51,11 @@ export function RealLab() {
       }
       const data: OpportunityExperimentResult = await res.json();
       setResult(data);
+      const realMovements = data.movements.filter((m) => !m.source.isFixture).length;
+      const fixtureMovements = data.movements.length - realMovements;
       toast({
         title: "Opportunity experiment complete",
-        description: `${data.opportunities.length} opportunities from ${data.movements.length} movements · ${data.metrics.opportunitiesPer1000}/1000`,
+        description: `${data.opportunities.length} opportunities | ${realMovements} real + ${fixtureMovements} fixture movements | ${data.survival.robustPer1000} robust/1000`,
       });
     } catch (e) {
       const msg = (e as Error)?.message ?? "Unknown error";
@@ -72,7 +77,7 @@ export function RealLab() {
             <div>
               <p className="text-sm font-semibold leading-tight">Real-World Opportunity Lab</p>
               <p className="text-[11px] text-muted-foreground leading-tight">
-                Does real-shaped movement data contain latent supply ordinary routing misses?
+                Does real movement data contain robust latent supply ordinary routing misses?
               </p>
             </div>
           </div>
@@ -81,11 +86,39 @@ export function RealLab() {
                    : <><Play className="mr-2 h-4 w-4" /> Run experiment</>}
           </Button>
         </div>
-        <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Pilot / movement dataset</Label>
+            <div className="flex rounded-md border p-0.5">
+              {(["chicago-taxi", "accra-osm", "accra-fixture"] as const).map((p) => (
+                <button key={p} onClick={() => setPilot(p)}
+                  className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition ${pilot === p ? "bg-emerald-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>
+                  {p === "chicago-taxi" ? "Chicago Taxi (REAL)" : p === "accra-osm" ? "Accra OSM (real roads)" : "Accra Fixture"}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {pilot === "chicago-taxi" ? "500 real Chicago taxi trips (public domain)" : pilot === "accra-osm" ? "Real OSM roads, fixture movements" : "All fixture"}
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Assumption profile</Label>
+            <div className="flex rounded-md border p-0.5">
+              {(["strict", "central", "optimistic"] as const).map((p) => (
+                <button key={p} onClick={() => setAssumptionProfile(p)}
+                  className={`flex-1 rounded px-2 py-1 text-[10px] font-medium capitalize transition ${assumptionProfile === p ? "bg-emerald-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>
+                  {p}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {assumptionProfile === "strict" ? "willingness 10%, execution 40%, detour 1km" : assumptionProfile === "central" ? "willingness 30%, execution 65%, detour 2km" : "willingness 50%, execution 80%, detour 3km"}
+            </p>
+          </div>
           <SliderField label="Demands" value={numDemands} min={50} max={1000} step={50} onChange={setNumDemands} hint="transportation events" />
           <SliderField label="Movement density" value={movementDensity} min={0.25} max={4} step={0.25} onChange={setMovementDensity} hint="× baseline trajectories" format={(v) => `${v}x`} />
-          <SliderField label="Willingness (assumed)" value={willingness} min={0.1} max={1} step={0.05} onChange={setWillingness} hint="mover acceptance probability" format={(v) => `${Math.round(v * 100)}%`} />
-          <SliderField label="Detour tolerance (assumed)" value={detourTolerance} min={0.5} max={6} step={0.5} onChange={setDetourTolerance} hint="km a mover will divert" format={(v) => `${v}km`} />
+          <SliderField label="Willingness (override)" value={willingness} min={0.1} max={1} step={0.05} onChange={setWillingness} hint="mover acceptance (profile overrides this)" format={(v) => `${Math.round(v * 100)}%`} />
+          <SliderField label="Detour tolerance (override)" value={detourTolerance} min={0.5} max={6} step={0.5} onChange={setDetourTolerance} hint="km a mover will divert (profile overrides)" format={(v) => `${v}km`} />
         </div>
       </Card>
 
@@ -97,6 +130,7 @@ export function RealLab() {
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="space-y-6">
           <PilotCard result={result} />
           <HeadlineMetrics result={result} />
+          <ValueTiersCard result={result} />
           <SurvivalCard result={result} />
           <ValueSplitCard result={result} />
           <DensityFitsCard result={result} />
@@ -187,6 +221,38 @@ function MetricCard({ icon: Icon, label, value, sub, tone }: { icon: any; label:
         <div className="flex items-center gap-1.5"><Icon className={`h-3.5 w-3.5 ${color}`} /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span></div>
         <p className={`mt-1 text-2xl font-bold tabular-nums ${color}`}>{value}</p>
         <p className="text-[10px] text-muted-foreground">{sub}</p>
+      </div>
+    </Card>
+  );
+}
+
+function ValueTiersCard({ result }: { result: OpportunityExperimentResult }) {
+  const v = result.valueTiers;
+  if (!v) return null;
+  return (
+    <Card className="py-0">
+      <div className="border-b bg-muted/30 px-4 py-2.5">
+        <span className="text-sm font-semibold">Value tiers — potential vs expected vs executed</span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3">
+        <div className="rounded-lg border bg-amber-500/5 p-3">
+          <p className="text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">Potential</p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-amber-600">${v.potentialValue}</p>
+          <p className="text-[10px] text-muted-foreground">${v.potentialPer1000}/1000 — all candidate opportunities (optimistic)</p>
+        </div>
+        <div className="rounded-lg border bg-cyan-500/5 p-3">
+          <p className="text-[10px] uppercase tracking-wide text-cyan-700 dark:text-cyan-300">Expected</p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-cyan-600">${v.expectedValue}</p>
+          <p className="text-[10px] text-muted-foreground">${v.expectedPer1000}/1000 — × survival × execution</p>
+        </div>
+        <div className="rounded-lg border bg-emerald-500/5 p-3">
+          <p className="text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Executed</p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-600">${v.executedValue}</p>
+          <p className="text-[10px] text-muted-foreground">${v.executedPer1000}/1000 — × willingness (closest to realized)</p>
+        </div>
+      </div>
+      <div className="border-t bg-muted/20 px-4 py-2 text-[10px] text-muted-foreground">
+        <strong>Potential</strong> = all candidate social surplus. <strong>Expected</strong> = potential × survival rate × execution probability. <strong>Executed</strong> = expected × willingness. Never present potential as realized value — the executed tier is the honest economic estimate.
       </div>
     </Card>
   );

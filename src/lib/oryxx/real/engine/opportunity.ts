@@ -325,10 +325,22 @@ function secToHHMM(sec: number): string {
 }
 
 // --- Generate demands (fixture, for the experiment) -------------------------
-export function generateDemands(config: RealExperimentConfig, nodes: GeographicNode[]): DemandObservation[] {
+export function generateDemands(config: RealExperimentConfig, nodes: GeographicNode[], movementHours?: number[]): DemandObservation[] {
   const r = rng(config.seed * 7 + 3);
   const demands: DemandObservation[] = [];
   const hubs = nodes.filter((n) => n.kind === "poi" || n.kind === "station");
+  // if movementHours provided, generate demand windows around those hours
+  // so temporal overlap is possible (demands must align with when movements occur)
+  const sampleHour = (): number => {
+    if (config.hourFilter != null) return config.hourFilter;
+    if (movementHours && movementHours.length > 0) {
+      // pick a movement hour + small jitter
+      const base = movementHours[Math.floor(r() * movementHours.length)];
+      return base + Math.floor((r() - 0.5) * 2);
+    }
+    // default: commute peaks
+    return r() < 0.5 ? 7 : 17;
+  };
   for (let i = 0; i < config.numDemands; i++) {
     const useHub = r() < 0.5;
     let origin: GeographicNode, dest: GeographicNode;
@@ -340,8 +352,8 @@ export function generateDemands(config: RealExperimentConfig, nodes: GeographicN
       dest = nodes[Math.floor(r() * nodes.length)];
     }
     if (origin.id === dest.id) { i--; continue; }
-    const peak = r() < 0.5 ? (7 * 3600 + Math.floor(r() * 3600)) : (17 * 3600 + Math.floor(r() * 3600));
-    const start = config.hourFilter != null ? config.hourFilter * 3600 + Math.floor(r() * 1800) : peak;
+    const hour = sampleHour();
+    const start = hour * 3600 + Math.floor(r() * 3600);
     const end = start + 1800; // 30-min window
     const km = haversineKm({ lat: origin.lat, lon: origin.lon }, { lat: dest.lat, lon: dest.lon });
     const ordinary = 3 + 1.6 * km;

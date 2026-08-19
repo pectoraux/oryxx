@@ -1,13 +1,14 @@
 // ORYXX — Real-world opportunity experiment endpoint.
 // POST /api/oryxx/opportunity/run
-//   body: Partial<RealExperimentConfig> + { useRealOsm?, survivalGrid? }
-// Runs the opportunity experiment on real OSM data (with fixture fallback for
-// transit/movement) and returns the full result including survival analysis.
+//   body: Partial<RealExperimentConfig> + { pilot?, survivalGrid? }
+// Runs the opportunity experiment on REAL movement data (Chicago taxi trips)
+// with fixture fallback. Returns full result including survival analysis.
 // Auth-required, rate-limited.
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
 import { runOpportunityExperiment } from "@/lib/oryxx/real/engine/runner";
+import { ChicagoTaxiProvider } from "@/lib/oryxx/real/providers/chicago-taxi";
 import { OsmAccraProvider } from "@/lib/oryxx/real/providers/osm-accra";
 import type { RealExperimentConfig } from "@/lib/oryxx/real/types";
 
@@ -31,9 +32,11 @@ function clamp(n: any, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(v)));
 }
 
-// Cache the OSM provider so real road data is fetched once per process
-let osmProvider: OsmAccraProvider | null = null;
-let osmLoaded = false;
+// Cache providers so real OSM road data is fetched once per process
+let chicagoProvider: ChicagoTaxiProvider | null = null;
+let chicagoLoaded = false;
+let accraOsmProvider: OsmAccraProvider | null = null;
+let accraOsmLoaded = false;
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
@@ -46,33 +49,32 @@ export async function POST(req: Request) {
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 }); }
 
+  const pilot = body?.pilot ?? "chicago-taxi";
   const config: RealExperimentConfig = {
     seed: clamp(body?.seed ?? 42, 1, 999999),
     numDemands: clamp(body?.numDemands ?? 200, 10, 2000),
     movementDensity: Number(body?.movementDensity ?? 1.0) || 1.0,
     planningHorizonSec: clamp(body?.planningHorizonSec ?? 0, 0, 7 * 86400),
-    willingness: Math.max(0, Math.min(1, Number(body?.willingness ?? 0.5))),
+    willingness: Math.max(0, Math.min(1, Number(body?.willingness ?? 0.3))),
     detourToleranceKm: Math.max(0, Math.min(10, Number(body?.detourToleranceKm ?? 2.0))),
     hourFilter: body?.hourFilter == null ? null : clamp(body.hourFilter, 0, 23),
+    pilot,
+    assumptionProfile: body?.assumptionProfile ?? "strict",
   };
 
-  const useRealOsm = body?.useRealOsm !== false; // default: use real OSM
-  const survivalGrid = body?.survivalGrid ?? "conservative";
-
   // Pre-fetch real OSM data so the sync runner can use it
-  if (useRealOsm && !osmLoaded) {
-    osmProvider = new OsmAccraProvider(config.seed, config.movementDensity);
-    try {
-      await osmProvider.ensureLoaded();
-      osmLoaded = true;
-    } catch (e) {
-      console.error("[opportunity/run] OSM fetch failed, will use fixture:", e);
-      osmLoaded = true; // mark loaded so we don't retry; runner will use fixture fallback
-    }
+  if (pilot === "chicago-taxi" && !chicagoLoaded) {
+    chicagoProvider = new ChicagoTaxiProvider(config.seed, config.movementDensity);
+    try { await chicagoProvider.ensureLoaded(); } catch (e) { console.error("[opportunity/run] Chicago OSM fetch failed:", e); }
+    chicagoLoaded = true;
+  } else if (pilot === "accra-osm" && !accraOsmLoaded) {
+    accraOsmProvider = new OsmAccraProvider(config.seed, config.movementDensity);
+    try { await accraOsmProvider.ensureLoaded(); } catch (e) { console.error("[opportunity/run] Accra OSM fetch failed:", e); }
+    accraOsmLoaded = true;
   }
 
   try {
-    const result = runOpportunityExperiment(config, { useRealOsm, survivalGrid });
+    const result = runOpportunityExperiment(config, { pilot });
     return NextResponse.json(result);
   } catch (err) {
     console.error("[oryxx/opportunity/run]", err);

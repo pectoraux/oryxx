@@ -26,6 +26,7 @@ import type {
 } from "../types";
 import { FixtureAccraProvider, ACCRA_PILOT, ACCRA_FIXTURE_SOURCE } from "../providers/fixture-accra";
 import { OsmAccraProvider, ACCRA_PILOT_REAL, OSM_SOURCE } from "../providers/osm-accra";
+import { ChicagoTaxiProvider, PILOT_CHICAGO, CHICAGO_TAXI_SOURCE, CHICAGO_OSM_SOURCE } from "../providers/chicago-taxi";
 import {
   generateDemands,
   generateOpportunities,
@@ -49,40 +50,89 @@ import {
 import { describe } from "../../market/experiment/statistics";
 
 export interface RunOptions {
-  useRealOsm?: boolean;      // fetch real OSM data (default true)
+  useRealOsm?: boolean;
   survivalGrid?: "conservative" | "central" | "full";
+  // which pilot/movement dataset to use
+  pilot?: "accra-fixture" | "accra-osm" | "chicago-taxi";
 }
+
+// Assumption profiles (prompt §8, §9)
+export interface AssumptionProfile {
+  name: "strict" | "central" | "optimistic";
+  willingness: number;
+  execution: number;
+  detourToleranceKm: number;
+  capacity: number;
+  compensationFloor: number;
+  reliability: number;
+}
+
+export const STRICT_PROFILE: AssumptionProfile = {
+  name: "strict",
+  willingness: 0.10,
+  execution: 0.40,
+  detourToleranceKm: 1.0,
+  capacity: 1,
+  compensationFloor: 4.0,
+  reliability: 0.60,
+};
+
+export const CENTRAL_PROFILE: AssumptionProfile = {
+  name: "central",
+  willingness: 0.30,
+  execution: 0.65,
+  detourToleranceKm: 2.0,
+  capacity: 1,
+  compensationFloor: 2.5,
+  reliability: 0.70,
+};
+
+export const OPTIMISTIC_PROFILE: AssumptionProfile = {
+  name: "optimistic",
+  willingness: 0.50,
+  execution: 0.80,
+  detourToleranceKm: 3.0,
+  capacity: 2,
+  compensationFloor: 2.0,
+  reliability: 0.80,
+};
 
 export function runOpportunityExperiment(
   config: RealExperimentConfig,
   options: RunOptions = {},
 ): OpportunityExperimentResult {
-  const useRealOsm = options.useRealOsm ?? true;
-  const gridName = options.survivalGrid ?? "conservative";
+  const pilotChoice = options.pilot ?? config.pilot ?? "chicago-taxi";
 
-  // --- provider selection: real OSM if available, fixture fallback ---
-  // The OSM provider falls back to fixture internally if the network fails.
-  const provider = useRealOsm
-    ? new OsmAccraProvider(config.seed, config.movementDensity)
-    : new FixtureAccraProvider(config.seed, config.movementDensity);
+  // --- provider selection by pilot ---
+  let provider: any;
+  let pilot: PilotGeography;
+  let dataSources: DataSource[];
+  let isRealMovement = false;
 
-  // load pilot data (sync accessors; OSM provider pre-fetches on first call
-  // via the async path — for the sync runner we use fixture-sync fallback if
-  // OSM hasn't been loaded yet. The API route calls ensureLoaded() first.)
+  if (pilotChoice === "chicago-taxi") {
+    provider = new ChicagoTaxiProvider(config.seed, config.movementDensity);
+    pilot = PILOT_CHICAGO;
+    dataSources = [CHICAGO_TAXI_SOURCE, CHICAGO_OSM_SOURCE];
+    isRealMovement = true; // REAL taxi trip data
+  } else if (pilotChoice === "accra-osm") {
+    provider = new OsmAccraProvider(config.seed, config.movementDensity);
+    pilot = provider.getPilotGeographySync();
+    dataSources = [OSM_SOURCE, ACCRA_FIXTURE_SOURCE];
+    isRealMovement = false; // fixture movements, real roads
+  } else {
+    provider = new FixtureAccraProvider(config.seed, config.movementDensity);
+    pilot = ACCRA_PILOT;
+    dataSources = [ACCRA_FIXTURE_SOURCE];
+    isRealMovement = false;
+  }
+
+  // load pilot data
   const nodes = provider.getGeographicNodesSync();
   const transit = provider.getTransitFeedSync();
-  const pilot = provider.getPilotGeographySync();
-  const isRealOsm = useRealOsm && pilot.id.includes("real-osm");
-  const dataSources: DataSource[] = isRealOsm
-    ? [OSM_SOURCE, ACCRA_FIXTURE_SOURCE]  // OSM roads + fixture transit/movement
-    : [ACCRA_FIXTURE_SOURCE];
-
-  // generate demands
-  const demands = generateDemands(config, nodes);
 
   // filter movements by planning horizon + hour
   const horizonEnd = 24 * 3600 + config.planningHorizonSec;
-  const movements = provider.getObservedMovementsSync(0, horizonEnd).filter((m) => {
+  const movements = provider.getObservedMovementsSync(0, horizonEnd).filter((m: ObservedMovement) => {
     if (config.hourFilter != null) {
       const hour = Math.floor(m.departureSec / 3600);
       if (Math.abs(hour - config.hourFilter) > 1) return false;
@@ -90,23 +140,38 @@ export function runOpportunityExperiment(
     return true;
   });
 
-  // infer latent supply (Layer A → Layer B)
-  const { supply: latent, assumptions } = inferLatentSupply(movements, config, ACCRA_FIXTURE_SOURCE);
+  // extract movement hours so demand windows align with when movements occur
+  const movementHours = [...new Set(movements.map((m: ObservedMovement) => Math.floor(m.departureSec / 3600)))];
+  const demands = generateDemands(config, nodes, movementHours);
 
-  // baseline: ordinary multimodal routing (competent — sees transit + rideshare)
+  // apply assumption profile to config
+  const profile = config.assumptionProfile === "strict" ? STRICT_PROFILE
+    : config.assumptionProfile === "optimistic" ? OPTIMISTIC_PROFILE
+    : CENTRAL_PROFILE;
+  const effectiveConfig = {
+    ...config,
+    willingness: profile.willingness,
+    detourToleranceKm: profile.detourToleranceKm,
+  };
+
+  // infer latent supply (Layer A → Layer B)
+  const { supply: latent, assumptions } = inferLatentSupply(movements, effectiveConfig, dataSources[0]);
+
+  // baseline: ordinary multimodal routing
   const baselineResult = computeBaseline(demands, transit, nodes);
 
-  // discover opportunities (central assumption set — fast)
+  // discover opportunities
   const opportunities = generateOpportunities(
-    demands, latent, baselineResult.perDemand, nodes, config, dataSources,
+    demands, latent, baselineResult.perDemand, nodes, effectiveConfig, dataSources,
   );
 
   // --- UNCERTAINTY / SURVIVAL ANALYSIS (prompt §6-9) ---
   // Build spatial/temporal index for performance
   const index = buildMovementIndex(movements, 1.0);
-  const grid: UncertaintyGrid = gridName === "conservative" ? CONSERVATIVE_GRID
-    : gridName === "central" ? CENTRAL_GRID
-    : CONSERVATIVE_GRID; // full grid is expensive; default to conservative
+  const grid: UncertaintyGrid = config.assumptionProfile === "strict" ? CONSERVATIVE_GRID
+    : config.assumptionProfile === "optimistic" ? CENTRAL_GRID
+    : CONSERVATIVE_GRID; // default conservative for central too
+  const gridName = config.assumptionProfile === "strict" ? "conservative" : "central";
   const scenarios = enumerateScenarios(grid);
 
   const survivalCandidates: SurvivalAnalysisResult["candidates"] = [];
@@ -229,24 +294,44 @@ export function runOpportunityExperiment(
     robustOpportunities: Math.round(p.opportunities * 0.4),
   }));
 
+  const stats = describe(values.length > 0 ? values : [0]);
+
+  // --- VALUE TIERS: potential vs expected vs executed (prompt §14) ---
+  // potential = sum of all opportunity social surplus (central assumption)
+  // expected = potential × survivalRate × execution probability
+  // executed = expected × willingness (closest to realized economic value)
+  const potentialValue = totalValue;
+  const expectedValue = survivalCandidates.reduce((a, c) => a + c.meanValue * c.survivalRate * profile.execution, 0);
+  const executedValue = expectedValue * profile.willingness;
+  const valueTiers = {
+    potentialValue: Math.round(potentialValue * 100) / 100,
+    expectedValue: Math.round(expectedValue * 100) / 100,
+    executedValue: Math.round(executedValue * 100) / 100,
+    potentialPer1000: demands.length > 0 ? Math.round((potentialValue / demands.length) * 1000) : 0,
+    expectedPer1000: demands.length > 0 ? Math.round((expectedValue / demands.length) * 1000) : 0,
+    executedPer1000: demands.length > 0 ? Math.round((executedValue / demands.length) * 1000) : 0,
+  };
+
   // data quality warnings — honest about what's real vs fixture
-  const warnings: string[] = isRealOsm
+  const warnings: string[] = isRealMovement
     ? [
-        "Road graph is REAL OpenStreetMap data (ODbL license, © OSM contributors) fetched live from the Overpass API.",
-        "Movement trajectories are FIXTURE — no public Accra mobility dataset was available in this environment. Real movement data is required to validate opportunity density.",
-        "Transit schedules are FIXTURE (GTFS-shaped) — no public Accra GTFS feed was found. Real GTFS would change transit-based opportunities.",
-        "Latent supply (Layer B) is entirely inferred from assumptions — capacity, willingness, execution probability are NOT measured.",
-        "Survival rates are computed over a " + gridName + " uncertainty grid (" + scenarios.length + " scenarios). Robust = >80% survival.",
+        `Movement data is REAL: ${movements.length} observed Chicago taxi trips (City of Chicago Open Data, public domain). taxi_id is SHA-256 hashed (no PII); coordinates are census tract centroids.`,
+        "Road graph is REAL OpenStreetMap data (ODbL, © OSM contributors) fetched live from the Overpass API.",
+        "Transit schedules are FIXTURE — no Chicago GTFS loaded. Real GTFS would change the multimodal baseline.",
+        "Taxi capacity (4 seats) is OBSERVED vehicle type — but driver WILLINGNESS to pool is NOT observed. It is an ASSUMPTION.",
+        "Assumption profile: " + profile.name.toUpperCase() + " (willingness " + (profile.willingness * 100) + "%, execution " + (profile.execution * 100) + "%, detour " + profile.detourToleranceKm + "km).",
+        "Survival rates computed over " + scenarios.length + " scenarios. Robust = >80% survival.",
+      ]
+    : pilotChoice === "accra-osm"
+    ? [
+        "Road graph is REAL OSM data (ODbL). Movement trajectories are FIXTURE — not empirical.",
+        "Latent supply (Layer B) is entirely inferred from assumptions.",
+        "Assumption profile: " + profile.name.toUpperCase() + ".",
       ]
     : [
-        "ALL data is fixture/synthetic — results are real measurements of the fixture, not empirical facts about Accra.",
-        "Movement trajectories are generated, not observed.",
-        "Latent supply (Layer B) is entirely inferred from assumptions.",
-        "Transit feed is a GTFS-shaped fixture.",
-        "Survival rates are computed over a " + gridName + " uncertainty grid (" + scenarios.length + " scenarios).",
+        "ALL data is fixture/synthetic — results are real measurements of the fixture, not empirical facts.",
+        "Assumption profile: " + profile.name.toUpperCase() + ".",
       ];
-
-  const stats = describe(values.length > 0 ? values : [0]);
 
   return {
     config, pilot, datasets: dataSources, demands, movements, latentSupply: latent,
@@ -266,6 +351,7 @@ export function runOpportunityExperiment(
     },
     survival,
     densityFits,
+    valueTiers,
     planningHorizonCurve: phCurve,
     densityCurve: densCurveWithRobust,
     topOpportunities: opportunities.slice(0, 12),

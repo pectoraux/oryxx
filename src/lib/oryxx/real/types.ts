@@ -271,6 +271,10 @@ export interface RealExperimentConfig {
   detourToleranceKm: number;
   // hour-of-day filter (null = all day)
   hourFilter: number | null;
+  // which pilot/movement dataset to use
+  pilot: "accra-fixture" | "accra-osm" | "chicago-taxi";
+  // assumption profile: strict = very conservative, central = moderate, optimistic = favorable
+  assumptionProfile: "strict" | "central" | "optimistic";
 }
 
 export interface OpportunityExperimentResult {
@@ -302,6 +306,15 @@ export interface OpportunityExperimentResult {
   survival: SurvivalAnalysisResult;
   // density-fit analysis (prompt §14)
   densityFits: DensityFitResult[];
+  // value tiers: potential vs expected vs executed (prompt §14)
+  valueTiers: {
+    potentialValue: number;      // sum of all candidate opportunity social surplus
+    expectedValue: number;        // potential × survivalRate × execution prob
+    executedValue: number;        // expected × willingness (closest to realized)
+    potentialPer1000: number;
+    expectedPer1000: number;
+    executedPer1000: number;
+  };
   planningHorizonCurve: { horizonSec: number; opportunities: number; value: number; robustOpportunities: number }[];
   densityCurve: { density: number; opportunities: number; value: number; robustOpportunities: number }[];
   topOpportunities: TransportationOpportunity[];
