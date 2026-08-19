@@ -326,3 +326,21 @@ Stage Summary:
 - The NYC data provides Tier B evidence (observed spare seats) but NOT Tier D (observed willingness).
 - The marketplace thesis requires Tier D. The next experiment must measure real willingness.
 - The defensible claim: "Real taxi data shows OBSERVED spare capacity exists (479/498 trips). Whether it can be monetized requires a willingness experiment."
+
+---
+Task ID: willingness-evidence
+Agent: orchestrator (principal)
+Task: Attack Tier D (observed willingness) — the critical gap. Build W0-W4 evidence tiers, acquire real W2 data, fit acceptance model, compute opportunity funnel + break-even.
+
+Work Log:
+- Searched for public revealed-preference datasets. NYC FHV data available with dispatching_base_num. Computed 2032 inter-trip gaps = W2 (revealed availability) evidence. No W3/W4 datasets found.
+- Built W0-W4 willingness evidence model: W0 (no evidence), W1 (stated), W2 (revealed availability), W3 (revealed acceptance), W4 (completed execution). Only W3+ is marketplace-sufficient.
+- Built willingness engine: loads real W2 FHV gaps, fits logistic acceptance model, generates acceptance observations from availability proxy + behavioral assumptions, computes 7-step opportunity funnel, computes break-even analysis.
+- Key finding: evidence tier = W2, marketplace sufficient = FALSE. Break-even shows NO detour levels viable at current acceptance. Net economic value = $0/1000.
+- 11 new tests. 76 total, all pass. Lint clean.
+
+Stage Summary:
+- The critical gap is W3 (revealed acceptance) = 0. We can observe WHEN drivers were available (W2, 2032 observations, median 8.6 min) but NOT WHETHER they would accept a pooled passenger.
+- The marketplace thesis is NOT justified by current evidence. It requires a field experiment: present real pooled-trip offers to real drivers and record accept/declide (W3).
+- The opportunity funnel shows the thesis narrows dramatically: 2032 movements → 8 executed opportunities (0.4%). At break-even, ~100% acceptance is needed at $3 compensation — economically marginal.
+- Live at oryxx.vercel.app (Willingness Lab tab). Repo at github.com/pectoraux/oryxx. 76 tests passing.
