@@ -460,3 +460,32 @@ Corrected status:
 - Consent IS bound to account (cross-user consent rejected)
 
 W3/W4 evidence = 0.
+
+---
+Task ID: evidence-split
+Agent: orchestrator (principal)
+Task: Split W3/W4 into W3-R/W4-R (research) vs W3-M/W4-M (marketplace). Ensure research evidence cannot be mistaken for marketplace evidence.
+
+Work Log:
+- Confirmed the reviewer's core critique: "verified provider accepted a research offer" ≠ "provider accepted a real marketplace opportunity."
+- Built split evidence model: W3-R/W4-R (research track) vs W3-M/W4-M (marketplace track).
+- EvidenceTier type frozen with 10 values: NONE, A, B, C, W2a, W2b, W3-R, W4-R, W3-M, W4-M.
+- Separate state machines: RESEARCH_TRANSITIONS vs MARKETPLACE_TRANSITIONS.
+- researchEvidenceForState() → W3-R/W4-R. marketplaceEvidenceForState() → W3-M/W4-M.
+- isResearchEvidence() / isMarketplaceEvidence() — never cross-contaminate.
+- loadDesignStrict() — THROWS on missing persisted design (no fallback).
+- verifyDesignHash() — validates hash at runtime.
+- validateMarketplaceOpportunity() — requires real DemandBinding + TransportationEventBinding.
+- ProviderVerificationStatus: unverified | operator_verified | externally_verified.
+- CompletionEvidenceLevel: none | operator | system | gps | provider_api.
+- EvidenceCounts separates research (w3r/w4r) from marketplace (w3m/w4m).
+- 11 new evidence-isolation tests. 99 total, all pass. Lint clean. Pushed.
+
+Final evidence state:
+  W3-R = 0, W4-R = 0, W3-M = 0, W4-M = 0
+
+Q: Does ORYXX have the infrastructure for a trustworthy provider-behavior experiment?
+A: YES.
+
+Q: Does ORYXX have evidence that a real latent transportation market exists?
+A: NOT YET.
