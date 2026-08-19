@@ -307,3 +307,22 @@ Stage Summary:
 - The executed value ($1.61/1000 strict) is economically marginal — not clearly enough to justify a marketplace.
 - The defensible claim narrows further: "ORYXX can discover ~27 robust latent-supply opportunities per 1000 demands from real taxi data, under conservative assumptions." Whether this is economically interesting depends on whether willingness/execution can be improved beyond the strict profile.
 - Live at oryxx.vercel.app (Real-World Lab → Chicago Taxi). Vercel deploy limit hit; will auto-deploy when limit resets.
+
+---
+Task ID: capacity-evidence
+Agent: orchestrator (principal)
+Task: Restructure the evidence model to separate observed movement from observed capacity from assumed willingness. Find real data with observable capacity (passenger_count). Build a Capacity Evidence Lab.
+
+Work Log:
+- Acquired 500 real NYC TLC yellow taxi trips WITH passenger_count (observed occupancy). Converted from parquet using pyarrow. 498 valid movements, 479 with observed spare seats (passenger_count < 4).
+- Built NPD evidence model: NpdMovement (Tier A observed), NpdCapacity (Tier B observed / Tier C inferred), NpdWillingness (Tier D observed / Tier E assumed). Every field has an EvidenceLevel (observed/inferred/assumed/unknown) with rationale.
+- Built capacity evidence engine: classifies each movement's capacity as Tier B (passenger_count known → spare seats observed) or Tier C (no passenger_count → spare assumed). All willingness is Tier E (no marketplace acceptance data exists).
+- Built Capacity Evidence Lab UI: evidence ladder (Tier A-E with OBSERVED/ASSUMED labels), opportunities by evidence class, top opportunities with full evidence trail, caveats, "What this does NOT prove" panel.
+- Key finding: Tier D (observed willingness) = 0. The data proves spare capacity EXISTS (479/498 trips had empty seats) but does NOT prove that capacity is bookable. This is the single most important unvalidated assumption.
+- 10 new tests. 65 total, all pass. Lint clean.
+
+Stage Summary:
+- The movement≠capacity conflation is now fixed. Observed movement and observed capacity are separate evidence tiers.
+- The NYC data provides Tier B evidence (observed spare seats) but NOT Tier D (observed willingness).
+- The marketplace thesis requires Tier D. The next experiment must measure real willingness.
+- The defensible claim: "Real taxi data shows OBSERVED spare capacity exists (479/498 trips). Whether it can be monetized requires a willingness experiment."
