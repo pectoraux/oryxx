@@ -489,3 +489,31 @@ A: YES.
 
 Q: Does ORYXX have evidence that a real latent transportation market exists?
 A: NOT YET.
+
+---
+Task ID: freeze-research-instrument
+Agent: orchestrator (principal)
+Task: Make the research pilot genuinely transaction-safe and audit-safe. Freeze the research protocol.
+
+Work Log:
+- Fixed 8 remaining defects:
+  1. Concurrency-safe randomization via Prisma $transaction (Serializable isolation)
+  2. Hash validation at activation + enrollment + offer creation
+  3. Offer immutability after OFFER_PRESENTED (state-only transitions)
+  4. offerExpiresAt stored explicitly (not computed)
+  5. Provider verification: operator_verified | externally_verified (explicit)
+  6. W4-R requires admin + completionEvidenceLevel recorded
+  7. Research API rejects MARKETPLACE_TRANSACTION; marketplace evidence structurally impossible
+  8. Audit log hash chain (event_n.hash = SHA256(payload + event_{n-1}.hash))
+- Renamed validateMarketplaceOpportunity → validateMarketplaceOpportunityShape
+- Added verifyMarketplaceOpportunityEvidence() → returns NOT_IMPLEMENTED
+- 99 tests pass. Lint clean. Pushed.
+
+RESEARCH PROTOCOL FROZEN.
+W3-R = 0, W4-R = 0, W3-M = 0, W4-M = 0.
+
+Q: Is the research instrument ready to run with real participants?
+A: YES.
+
+Q: Does ORYXX have evidence of a real transportation marketplace?
+A: NO.
