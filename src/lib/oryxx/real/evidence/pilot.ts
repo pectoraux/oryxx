@@ -109,9 +109,9 @@ export interface PreregisteredDesign {
 }
 
 export function computePreregistrationHash(design: PreregisteredDesign): string {
-  // canonical JSON (sorted keys) → SHA-256
+  // canonical JSON (sorted keys) → FULL SHA-256 (not truncated)
   const canonical = JSON.stringify(design, Object.keys(design).sort());
-  return createHash("sha256").update(canonical).digest("hex").substring(0, 16);
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 export function canMutateDesign(status: ExperimentStatus): boolean {
@@ -154,23 +154,29 @@ export function generateTreatmentCells(design: PreregisteredDesign): TreatmentCe
   return cells;
 }
 
-// Deterministic, balanced assignment using a seeded PRNG + round-robin.
-// The assignment is reproducible from (participantId, experimentId, seed).
-// Balance is achieved by cycling through cells in order.
+// Balanced randomization: assign the LEAST-FILLED eligible cell, with a
+// deterministic randomized tiebreak (seeded). This guarantees balance
+// across treatment cells. The assignment is reproducible from
+// (participantId, experimentId, seed, cellCounts).
 export function assignTreatment(
   participantId: string,
   experimentId: string,
   seed: number,
   cells: TreatmentCell[],
-  priorAssignmentCount: number, // how many participants already assigned
+  cellCounts: number[], // current count per cell (same order as cells)
 ): TreatmentCell {
   if (cells.length === 0) throw new Error("No treatment cells available");
-  // hash the participant+experiment to a position, then add the prior count
-  // for balance (round-robin with a deterministic offset)
+  // find the minimum count
+  const minCount = Math.min(...cellCounts);
+  // collect all cells at the minimum count (tie candidates)
+  const candidates: number[] = [];
+  for (let i = 0; i < cellCounts.length; i++) {
+    if (cellCounts[i] === minCount) candidates.push(i);
+  }
+  // deterministic tiebreak: hash participantId+experimentId+seed → pick one
   const hash = [...participantId + experimentId].reduce((a, c) => a * 31 + c.charCodeAt(0), seed);
-  const offset = Math.abs(hash) % cells.length;
-  const idx = (offset + priorAssignmentCount) % cells.length;
-  return cells[idx];
+  const winner = candidates[Math.abs(hash) % candidates.length];
+  return cells[winner];
 }
 
 // =====================================================================

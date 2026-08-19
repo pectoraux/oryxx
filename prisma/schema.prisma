@@ -64,8 +64,10 @@ model AcceptanceExperiment {
   analysisMethod  String?
   stoppingRule    String?
   randomizationSeed Int   @default(42)
-  preregistrationHash String? // SHA-256 of canonical design
+  preregistrationHash String? // FULL SHA-256 of canonical design (not truncated)
   preregisteredAt String?
+  // PERSISTED treatment design (the actual preregistered cells used at runtime)
+  treatmentDesignJson String? // JSON of PreregisteredDesign — used at enrollment/offer time
   // economic assumptions (labelled, not observed)
   assumedUserSavings Float @default(4.0)
   assumedFailureCost Float @default(1.0)
@@ -84,19 +86,30 @@ model AcceptanceExperiment {
 }
 
 // Enrollment: binds a pseudonymous participant to an experiment.
-// The participantId is SERVER-GENERATED, never client-supplied.
+// CRITICAL: The participantId is SERVER-GENERATED and bound to the
+// NextAuth account email. This prevents token transfer between users.
+// Enrollment requires admin verification that the participant IS a real
+// transportation provider (not just any authenticated user).
 model ExperimentEnrollment {
   id              String   @id @default(cuid())
   experimentId    String
   experiment      AcceptanceExperiment @relation(fields: [experimentId], references: [id])
   // server-generated pseudonymous ID (no PII)
   participantId   String   @unique
-  // enrollment token (used for offer authorization)
+  // BINDS enrollment to a specific NextAuth account (prevents token transfer)
+  accountEmail    String   // the authenticated user's email at enrollment time
+  // enrollment token (used for offer authorization, short-lived)
   enrollmentToken String   @unique
+  // PROVIDER VERIFICATION: must be set to "verified" by an admin before
+  // the participant can receive offers. This prevents any authenticated
+  // user from self-enrolling and manufacturing W3.
+  providerVerified String  @default("unverified") // unverified | verified | rejected
+  providerType    String?  // taxi | fhv | truck | private
   // treatment cell assigned at enrollment (immutable)
   assignedCellId  String?
   // timestamps
   enrolledAt      DateTime @default(now())
+  verifiedAt      DateTime?
   withdrawnAt     DateTime?
   status          String   @default("active") // active | withdrawn
   // relations
@@ -105,10 +118,13 @@ model ExperimentEnrollment {
 
   @@index([experimentId])
   @@index([participantId])
+  @@index([accountEmail])
 }
 
 // Consent: server-enforced prerequisite for participation.
 // No response is accepted without a valid, non-withdrawn consent record.
+// CRITICAL: consent is bound to the accountEmail, not just the enrollment token.
+// This prevents user B from recording consent for user A's enrollment.
 model ExperimentConsent {
   id              String   @id @default(cuid())
   experimentId    String
@@ -116,14 +132,17 @@ model ExperimentConsent {
   enrollmentId    String
   enrollment      ExperimentEnrollment @relation(fields: [enrollmentId], references: [id])
   participantId   String
+  // binds consent to the authenticated account (not just the token)
+  accountEmail    String
   consentVersion  Int
-  consentTextHash String   // hash of the consent text at time of consent
+  consentTextHash String   // full SHA-256 of consent text
   consentText     String
   consentedAt     DateTime @default(now())
   withdrawnAt     DateTime?
 
   @@index([experimentId])
   @@index([enrollmentId])
+  @@index([accountEmail])
 }
 
 model ProviderResponse {
@@ -149,10 +168,16 @@ model ProviderResponse {
   // state machine
   state           String   @default("OFFER_CREATED")
   decision        String?  // accept | decline | not_available | ignore
-  // execution
+  // execution (if accepted)
   executed        Boolean?
   completed       Boolean?
   executionFailureReason String?
+  // EXTERNAL VERIFICATION: W4 requires external proof of trip completion.
+  // The participant CANNOT self-report completion. An admin or system
+  // must provide verification before state can transition to TRIP_COMPLETED.
+  externalVerificationMethod String? // admin_verified | system_verified | gps_verified
+  externalVerifiedBy String? // admin email or system id
+  externalVerifiedAt DateTime?
   // evidence tier (computed from state, NOT from client)
   evidenceTier    String   @default("NONE")
   // timing

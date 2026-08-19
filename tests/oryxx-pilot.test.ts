@@ -59,8 +59,8 @@ describe("ORYXX W3 Pilot — state machine + evidence integrity", () => {
       { compensation: 3, detourKm: 2, extraTimeMin: 5, advanceNoticeMin: 15 },
       { compensation: 4, detourKm: 3, extraTimeMin: 10, advanceNoticeMin: 60 },
     ];
-    const c1 = assignTreatment("P-abc123", "EXP-1", 42, cells);
-    const c2 = assignTreatment("P-abc123", "EXP-1", 42, cells);
+    const c1 = assignTreatment("P-abc123", "EXP-1", 42, cells, [0,0,0]);
+    const c2 = assignTreatment("P-abc123", "EXP-1", 42, cells, [0,0,0]);
     expect(c1).toEqual(c2); // deterministic
   });
 
@@ -120,7 +120,7 @@ describe("ORYXX W3 Pilot — state machine + evidence integrity", () => {
   // === 10. Marketplace decision: NOT_TESTED when W3 = 0 ===
   test("marketplace decision returns NOT_TESTED when no W3 evidence exists", () => {
     const counts = emptyEvidenceCounts();
-    const cells: TreatmentCell[] = [{ compensation: 3, detourKm: 2, extraTimeMin: 5, advanceNoticeMin: 0 }];
+    const cells: TreatmentCell[] = [{ id: "test", compensation: 3, detourKm: 2, extraTimeMin: 5, advanceNoticeMin: 0 }];
     const decision = evaluateMarketplaceDecision([], 30);
     expect(decision.verdict).toBe("NOT_TESTED");
     expect(decision.reason).toContain("No W3 evidence");
@@ -141,8 +141,8 @@ describe("ORYXX W3 Pilot — state machine + evidence integrity", () => {
 
   // === 12. Privacy: provider IDs are pseudonymous ===
   test("assignTreatment does not require or expose PII", () => {
-    const cells: TreatmentCell[] = [{ compensation: 3, detourKm: 2, extraTimeMin: 5, advanceNoticeMin: 0 }];
-    const cell = assignTreatment("P-abc123", "EXP-1", 42, cells, 0);
+    const cells: TreatmentCell[] = [{ id: "test", compensation: 3, detourKm: 2, extraTimeMin: 5, advanceNoticeMin: 0 }];
+    const cell = assignTreatment("P-abc123", "EXP-1", 42, cells, [0]);
     // the function only uses the providerId string for hashing — no PII accessed
     expect(cell).toBeDefined();
     expect(cell.compensation).toBeGreaterThan(0);
