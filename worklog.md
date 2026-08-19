@@ -344,3 +344,22 @@ Stage Summary:
 - The marketplace thesis is NOT justified by current evidence. It requires a field experiment: present real pooled-trip offers to real drivers and record accept/declide (W3).
 - The opportunity funnel shows the thesis narrows dramatically: 2032 movements → 8 executed opportunities (0.4%). At break-even, ~100% acceptance is needed at $3 compensation — economically marginal.
 - Live at oryxx.vercel.app (Willingness Lab tab). Repo at github.com/pectoraux/oryxx. 76 tests passing.
+
+---
+Task ID: w3-instrumentation
+Agent: orchestrator (principal)
+Task: Correct W2a≠W3 false precision + search for real W3 data + build field-experiment instrumentation.
+
+Work Log:
+- Audited willingness engine: found W2 was named "revealed availability" — implying observed behavioral response. Inter-trip gaps are NOT-on-trip observations, NOT confirmed availability. Corrected.
+- Evidence model: W2 → W2a "Not-on-trip observation" (explicitly NOT "revealed willingness"). Added W2b "Confirmed availability". All tiers now have label: EMPIRICAL|INFERRED|ASSUMED|NONE.
+- Renamed acceptance model to "scenario estimate" (not "observed acceptance"). The 18% figure is now explicitly labelled "a modeled estimate, NOT a measured fact."
+- Searched for public W3 data: Uber Movement (301 redirect, no acceptance data), Lyft (403), NYC TLC (no cancellation/acceptance field), Chicago (no decision field), Didi GAIA (unreachable). NO public dataset contains real provider accept/reject decisions for pooled-trip offers.
+- Built field-experiment instrumentation: Prisma schema (AcceptanceExperiment + ProviderResponse, pseudonymous), 3 API routes (create experiment, submit response, get results with Wilson CI). Safety constraints (maxDetourKm, minCompensation). Consent text. Provider IDs are pseudonymous (no PII).
+- UI corrected: "SCENARIO ANALYSIS" banner, "⚠ SCENARIO MODEL — NOT OBSERVED" on acceptance curves, W2a/W2b/W3/W4 ladder with NOT SUFFICIENT message.
+- 76 tests, all pass. Lint clean.
+
+HONEST CONCLUSION:
+- W3 = 0. ORYXX has NOT crossed the gap from capacity to bookable supply.
+- The field experiment is instrumented but NOT deployed — ethical/legal requirements for a real field experiment with human participants are not yet satisfied.
+- The single missing measurement: present a real pooled-trip offer to real drivers and record accept/declide (W3).
