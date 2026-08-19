@@ -100,11 +100,11 @@ model ExperimentEnrollment {
   accountEmail    String   // the authenticated user's email at enrollment time
   // enrollment token (used for offer authorization, short-lived)
   enrollmentToken String   @unique
-  // PROVIDER VERIFICATION: must be set to "verified" by an admin before
-  // the participant can receive offers. This prevents any authenticated
-  // user from self-enrolling and manufacturing W3.
-  providerVerified String  @default("unverified") // unverified | verified | rejected
+  // PROVIDER VERIFICATION: must be set by admin before offers. Level is explicit.
+  providerVerified String  @default("unverified") // unverified | operator_verified | externally_verified
   providerType    String?  // taxi | fhv | truck | private
+  verificationMethod String? // admin_manual | external_api | credential_check
+  verificationReference String? // external reference id
   // treatment cell assigned at enrollment (immutable)
   assignedCellId  String?
   // timestamps
@@ -172,12 +172,14 @@ model ProviderResponse {
   executed        Boolean?
   completed       Boolean?
   executionFailureReason String?
-  // EXTERNAL VERIFICATION: W4 requires external proof of trip completion.
+  // EXTERNAL VERIFICATION: W4-R requires external proof of trip completion.
   // The participant CANNOT self-report completion. An admin or system
   // must provide verification before state can transition to TRIP_COMPLETED.
-  externalVerificationMethod String? // admin_verified | system_verified | gps_verified
+  externalVerificationMethod String? // admin_verified | system_verified | gps_verified | provider_api_verified
   externalVerifiedBy String? // admin email or system id
   externalVerifiedAt DateTime?
+  // completion evidence level (explicit — not collapsed)
+  completionEvidenceLevel String? // none | operator | system | gps | provider_api
   // evidence tier (computed from state, NOT from client)
   evidenceTier    String   @default("NONE")
   // timing
@@ -194,8 +196,10 @@ model ProviderResponse {
   @@index([evidenceTier])
 }
 
-// Append-only event log: the scientific audit trail.
-// Never updated, only inserted.
+// Append-only event log: tamper-evident application audit trail.
+// Each event includes a hash chain: event_n.hash = SHA256(payload + event_{n-1}.hash)
+// This is NOT cryptographically immutable (DB admin could modify), but it is
+// tamper-evident at the application layer. No UPDATE or DELETE endpoint exists.
 model ExperimentEvent {
   id              String   @id @default(cuid())
   experimentId    String
@@ -208,6 +212,9 @@ model ExperimentEvent {
   actorType       String   // system | participant | admin
   actorId         String
   metadataHash    String
+  // hash chain (tamper-evident)
+  eventHash       String   // SHA256(payload + previousEventHash)
+  previousEventHash String? // null for first event in chain
 
   @@index([experimentId])
   @@index([offerId])

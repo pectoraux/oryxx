@@ -9,7 +9,7 @@ import {
   marketplaceEvidenceForState,
   isResearchEvidence,
   isMarketplaceEvidence,
-  validateMarketplaceOpportunity,
+  validateMarketplaceOpportunityShape,
   loadDesignStrict,
   computePreregistrationHash,
   verifyDesignHash,
@@ -70,11 +70,11 @@ describe("ORYXX evidence isolation — W3-R ≠ W3-M, W4-R ≠ W4-M", () => {
   });
 
   // === 6. Marketplace opportunity requires real demand + supply bindings ===
-  test("validateMarketplaceOpportunity rejects missing demand/supply bindings", () => {
-    expect(validateMarketplaceOpportunity({ demandBinding: null, supplyBinding: null }).valid).toBe(false);
-    expect(validateMarketplaceOpportunity({ demandBinding: { demandId: "d1", origin: {lat:0,lon:0}, destination: {lat:1,lon:1} }, supplyBinding: null }).valid).toBe(false);
-    expect(validateMarketplaceOpportunity({ demandBinding: null, supplyBinding: { eventId: "e1", providerId: "p1", origin: {lat:0,lon:0}, destination: {lat:1,lon:1} } }).valid).toBe(false);
-    const valid = validateMarketplaceOpportunity({
+  test("validateMarketplaceOpportunityShape rejects missing demand/supply bindings", () => {
+    expect(validateMarketplaceOpportunityShape({ demandBinding: null, supplyBinding: null }).valid).toBe(false);
+    expect(validateMarketplaceOpportunityShape({ demandBinding: { demandId: "d1", origin: {lat:0,lon:0}, destination: {lat:1,lon:1} }, supplyBinding: null }).valid).toBe(false);
+    expect(validateMarketplaceOpportunityShape({ demandBinding: null, supplyBinding: { eventId: "e1", providerId: "p1", origin: {lat:0,lon:0}, destination: {lat:1,lon:1} } }).valid).toBe(false);
+    const valid = validateMarketplaceOpportunityShape({
       demandBinding: { demandId: "d1", origin: {lat:0,lon:0}, destination: {lat:1,lon:1} },
       supplyBinding: { eventId: "e1", providerId: "p1", origin: {lat:0,lon:0}, destination: {lat:1,lon:1} },
     });

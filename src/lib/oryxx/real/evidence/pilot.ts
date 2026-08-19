@@ -318,7 +318,8 @@ export interface MarketplaceOpportunity {
 }
 
 // W3-M CANNOT be created without valid demand + supply bindings
-export function validateMarketplaceOpportunity(opp: {
+// Structural validation only — does NOT verify external truth
+export function validateMarketplaceOpportunityShape(opp: {
   demandBinding: any;
   supplyBinding: any;
 }): { valid: boolean; errors: string[] } {
@@ -331,6 +332,14 @@ export function validateMarketplaceOpportunity(opp: {
   if (!opp.supplyBinding?.origin) errors.push("Missing supply origin");
   if (!opp.supplyBinding?.destination) errors.push("Missing supply destination");
   return { valid: errors.length === 0, errors };
+}
+
+// Evidence verification — CANNOT succeed until real provider integrations exist
+export function verifyMarketplaceOpportunityEvidence(): { verified: boolean; reason: string } {
+  return {
+    verified: false,
+    reason: "NOT_IMPLEMENTED — no real provider integration exists. Structural shape can be validated, but external truth cannot be verified. W3-M/W4-M evidence creation is impossible until a real provider API is connected.",
+  };
 }
 
 // =====================================================================
@@ -453,12 +462,28 @@ export interface ExperimentEvent {
   id: string; experimentId: string; offerId: string; participantId: string;
   fromState: string | null; toState: string; timestamp: string;
   actorType: "system" | "participant" | "admin"; actorId: string; metadataHash: string;
+  // tamper-evident hash chain
+  eventHash: string;
+  previousEventHash: string | null;
 }
 
-export function createEvent(experimentId: string, offerId: string, participantId: string, fromState: string | null, toState: string, actorType: "system" | "participant" | "admin", actorId: string): ExperimentEvent {
+export function createEvent(
+  experimentId: string, offerId: string, participantId: string,
+  fromState: string | null, toState: string,
+  actorType: "system" | "participant" | "admin", actorId: string,
+  previousEventHash: string | null = null, // for hash chain
+): ExperimentEvent {
   const timestamp = new Date().toISOString();
-  const data = `${experimentId}|${offerId}|${participantId}|${fromState}|${toState}|${timestamp}`;
-  return { id: `EVT-${createHash("sha256").update(data + Math.random()).digest("hex").substring(0, 12)}`, experimentId, offerId, participantId, fromState, toState, timestamp, actorType, actorId, metadataHash: createHash("sha256").update(data).digest("hex").substring(0, 16) };
+  const payload = `${experimentId}|${offerId}|${participantId}|${fromState}|${toState}|${timestamp}|${actorType}|${actorId}`;
+  const metadataHash = createHash("sha256").update(payload).digest("hex").substring(0, 16);
+  // hash chain: event_n.hash = SHA256(payload + event_{n-1}.hash)
+  const eventHash = createHash("sha256").update(payload + (previousEventHash ?? "")).digest("hex");
+  return {
+    id: `EVT-${createHash("sha256").update(payload + Math.random()).digest("hex").substring(0, 12)}`,
+    experimentId, offerId, participantId,
+    fromState, toState, timestamp, actorType, actorId,
+    metadataHash, eventHash, previousEventHash,
+  };
 }
 
 // =====================================================================
