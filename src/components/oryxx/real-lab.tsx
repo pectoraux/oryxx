@@ -97,7 +97,9 @@ export function RealLab() {
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="space-y-6">
           <PilotCard result={result} />
           <HeadlineMetrics result={result} />
+          <SurvivalCard result={result} />
           <ValueSplitCard result={result} />
+          <DensityFitsCard result={result} />
           <PlanningHorizonCard result={result} />
           <DensityCard result={result} />
           <OpportunitiesFeed result={result} />
@@ -144,7 +146,9 @@ function PilotCard({ result }: { result: OpportunityExperimentResult }) {
               <div className="flex items-center gap-1.5">
                 <Database className="h-3 w-3 text-muted-foreground" />
                 <span className="text-[11px] font-medium">{ds.name}</span>
-                {ds.isFixture && <Badge variant="outline" className="border-amber-500/40 text-[9px] text-amber-700 dark:text-amber-300">FIXTURE</Badge>}
+                {ds.isFixture
+                  ? <Badge variant="outline" className="border-amber-500/40 text-[9px] text-amber-700 dark:text-amber-300">FIXTURE</Badge>
+                  : <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-700 dark:text-emerald-300">REAL DATA</Badge>}
               </div>
               <p className="mt-0.5 text-[10px] text-muted-foreground">{ds.license}</p>
             </div>
@@ -183,6 +187,100 @@ function MetricCard({ icon: Icon, label, value, sub, tone }: { icon: any; label:
         <div className="flex items-center gap-1.5"><Icon className={`h-3.5 w-3.5 ${color}`} /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span></div>
         <p className={`mt-1 text-2xl font-bold tabular-nums ${color}`}>{value}</p>
         <p className="text-[10px] text-muted-foreground">{sub}</p>
+      </div>
+    </Card>
+  );
+}
+
+function SurvivalCard({ result }: { result: OpportunityExperimentResult }) {
+  const s = result.survival;
+  if (!s || s.totalScenarios === 0) return null;
+  const total = s.robustCount + s.plausibleCount + s.fragileCount + s.speculativeCount;
+  const buckets = [
+    { label: "Robust (>80%)", count: s.robustCount, color: "bg-emerald-500", text: "text-emerald-600" },
+    { label: "Plausible (50-80%)", count: s.plausibleCount, color: "bg-cyan-500", text: "text-cyan-600" },
+    { label: "Fragile (20-50%)", count: s.fragileCount, color: "bg-amber-500", text: "text-amber-600" },
+    { label: "Speculative (<20%)", count: s.speculativeCount, color: "bg-rose-500", text: "text-rose-600" },
+  ];
+  return (
+    <Card className="overflow-hidden py-0">
+      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-500 via-amber-500 to-rose-500" />
+      <div className="border-b bg-muted/30 px-4 py-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold">Uncertainty / survival analysis — the skeptical headline</span>
+          <Badge variant="outline" className="text-[10px]">{s.gridName} grid · {s.totalScenarios} scenarios</Badge>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Robust opportunities / 1000</p>
+          <p className="mt-1 text-3xl font-bold tabular-nums text-emerald-600">{s.robustPer1000}</p>
+          <p className="text-[11px] text-muted-foreground">survive {">"}80% of conservative scenarios</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Conservative value / 1000</p>
+          <p className="mt-1 text-3xl font-bold tabular-nums text-emerald-600">${s.conservativeValuePer1000}</p>
+          <p className="text-[11px] text-muted-foreground">expected value under conservative assumptions</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Median survival rate</p>
+          <p className="mt-1 text-3xl font-bold tabular-nums text-amber-600">{Math.round(s.medianSurvivalRate * 100)}%</p>
+          <p className="text-[11px] text-muted-foreground">of all candidate opportunities</p>
+        </div>
+      </div>
+      <div className="border-t px-4 py-3">
+        <p className="text-[10px] font-medium text-muted-foreground mb-2">Survival-rate distribution ({total} candidates)</p>
+        <div className="space-y-1.5">
+          {buckets.map((b) => (
+            <div key={b.label} className="flex items-center gap-2">
+              <span className="w-32 shrink-0 text-[11px] text-muted-foreground">{b.label}</span>
+              <div className="flex-1 h-5 rounded bg-muted overflow-hidden">
+                <div className={`h-full ${b.color}`} style={{ width: `${total > 0 ? (b.count / total) * 100 : 0}%` }} />
+              </div>
+              <span className={`w-20 shrink-0 text-right text-[11px] font-medium ${b.text}`}>{b.count} ({total > 0 ? Math.round((b.count / total) * 100) : 0}%)</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="border-t bg-amber-500/5 px-4 py-2">
+        <p className="text-[10px] text-muted-foreground">
+          <strong className="text-amber-700 dark:text-amber-300">Skeptical read:</strong> Under conservative assumptions (willingness 10-30%, execution 40-60%, detour 0.5-2km), only <strong>{s.robustPer1000} per 1000</strong> opportunities survive robustly. The central-assumption headline ({result.metrics.opportunitiesPer1000}/1000) is optimistic — the survival analysis is the number to trust.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+function DensityFitsCard({ result }: { result: OpportunityExperimentResult }) {
+  if (!result.densityFits || result.densityFits.length === 0) return null;
+  const bestFit = [...result.densityFits].sort((a, b) => b.r2 - a.r2)[0];
+  return (
+    <Card className="py-0">
+      <div className="border-b bg-muted/30 px-4 py-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold">Density-scaling fit — linear, sublinear, or superlinear?</span>
+          <Badge variant="outline" className="text-[10px]">best: {bestFit.model} (R²={bestFit.r2.toFixed(3)})</Badge>
+        </div>
+      </div>
+      <div className="divide-y">
+        {result.densityFits.map((f) => (
+          <div key={f.model} className={`flex items-center gap-3 px-4 py-2 ${f.model === bestFit.model ? "bg-emerald-500/5" : ""}`}>
+            <div className="w-24 shrink-0">
+              <Badge variant="outline" className={`text-[10px] ${f.model === bestFit.model ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : ""}`}>{f.model}</Badge>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-mono text-[11px]">{f.formula}</p>
+              <p className="text-[10px] text-muted-foreground">{f.interpretation}</p>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-sm font-bold tabular-nums">{f.r2.toFixed(3)}</p>
+              <p className="text-[9px] text-muted-foreground">R²</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="border-t bg-muted/20 px-4 py-2 text-[10px] text-muted-foreground">
+        Compare R² across models. The best fit tells you how opportunity density scales: <strong>logarithmic/power with exponent &lt;1 = sublinear</strong> (saturating), <strong>linear = proportional</strong>, <strong>quadratic with positive coef = superlinear</strong> (potential network effect). Do not declare a network effect unless the quadratic fit has positive coef AND R² &gt; 0.9.
       </div>
     </Card>
   );

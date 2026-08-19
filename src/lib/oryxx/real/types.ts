@@ -298,13 +298,64 @@ export interface OpportunityExperimentResult {
     byMode: Record<string, number>;
     byHour: Record<number, number>;
   };
-  planningHorizonCurve: { horizonSec: number; opportunities: number; value: number }[];
-  densityCurve: { density: number; opportunities: number; value: number }[];
+  // uncertainty + survival analysis (prompt §6-9)
+  survival: SurvivalAnalysisResult;
+  // density-fit analysis (prompt §14)
+  densityFits: DensityFitResult[];
+  planningHorizonCurve: { horizonSec: number; opportunities: number; value: number; robustOpportunities: number }[];
+  densityCurve: { density: number; opportunities: number; value: number; robustOpportunities: number }[];
   topOpportunities: TransportationOpportunity[];
   dataQualityWarnings: string[];
   assumptions: Assumption[];
   generatedAt: string;
 }
+
+// Survival analysis result — the headline is robust opportunities per 1000
+export interface SurvivalAnalysisResult {
+  // grid used
+  gridName: "conservative" | "central" | "full";
+  totalScenarios: number;
+  // per-candidate survival
+  candidates: {
+    candidateId: string;
+    demandId: string;
+    movementId: string;
+    survivalRate: number;
+    robustness: "robust" | "plausible" | "fragile" | "speculative";
+    meanValue: number;
+    p10Value: number;
+    p90Value: number;
+    tier: OpportunityTier;
+  }[];
+  // aggregate
+  robustCount: number;         // >80% survival
+  plausibleCount: number;      // 50-80%
+  fragileCount: number;        // 20-50%
+  speculativeCount: number;    // <20%
+  robustPer1000: number;
+  conservativeValuePer1000: number; // expected value under conservative assumptions
+  medianSurvivalRate: number;
+  survivalRateDistribution: { bucket: string; count: number; pct: number }[];
+}
+
+export interface DensityFitResult {
+  model: "linear" | "logarithmic" | "power" | "quadratic";
+  formula: string;
+  r2: number;
+  coef: number;
+  interpretation: string;
+}
+
+// Backward-compat: the old result didn't have survival/densityFits. Experiments
+// that don't request survival get an empty survival object.
+export const EMPTY_SURVIVAL: SurvivalAnalysisResult = {
+  gridName: "conservative",
+  totalScenarios: 0,
+  candidates: [],
+  robustCount: 0, plausibleCount: 0, fragileCount: 0, speculativeCount: 0,
+  robustPer1000: 0, conservativeValuePer1000: 0, medianSurvivalRate: 0,
+  survivalRateDistribution: [],
+};
 
 export interface OpportunityBaselineResult {
   name: "Ordinary multimodal routing";

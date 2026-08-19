@@ -1,12 +1,14 @@
 // ORYXX — Real-world opportunity experiment endpoint.
 // POST /api/oryxx/opportunity/run
-//   body: Partial<RealExperimentConfig>
-// Runs the opportunity experiment on the fixture pilot and returns the full result.
+//   body: Partial<RealExperimentConfig> + { useRealOsm?, survivalGrid? }
+// Runs the opportunity experiment on real OSM data (with fixture fallback for
+// transit/movement) and returns the full result including survival analysis.
 // Auth-required, rate-limited.
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
 import { runOpportunityExperiment } from "@/lib/oryxx/real/engine/runner";
+import { OsmAccraProvider } from "@/lib/oryxx/real/providers/osm-accra";
 import type { RealExperimentConfig } from "@/lib/oryxx/real/types";
 
 export const runtime = "nodejs";
@@ -29,6 +31,10 @@ function clamp(n: any, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(v)));
 }
 
+// Cache the OSM provider so real road data is fetched once per process
+let osmProvider: OsmAccraProvider | null = null;
+let osmLoaded = false;
+
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const email = (session?.user as any)?.email;
@@ -50,8 +56,23 @@ export async function POST(req: Request) {
     hourFilter: body?.hourFilter == null ? null : clamp(body.hourFilter, 0, 23),
   };
 
+  const useRealOsm = body?.useRealOsm !== false; // default: use real OSM
+  const survivalGrid = body?.survivalGrid ?? "conservative";
+
+  // Pre-fetch real OSM data so the sync runner can use it
+  if (useRealOsm && !osmLoaded) {
+    osmProvider = new OsmAccraProvider(config.seed, config.movementDensity);
+    try {
+      await osmProvider.ensureLoaded();
+      osmLoaded = true;
+    } catch (e) {
+      console.error("[opportunity/run] OSM fetch failed, will use fixture:", e);
+      osmLoaded = true; // mark loaded so we don't retry; runner will use fixture fallback
+    }
+  }
+
   try {
-    const result = runOpportunityExperiment(config);
+    const result = runOpportunityExperiment(config, { useRealOsm, survivalGrid });
     return NextResponse.json(result);
   } catch (err) {
     console.error("[oryxx/opportunity/run]", err);

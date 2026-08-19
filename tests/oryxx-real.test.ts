@@ -34,6 +34,12 @@ import {
   generateDemands,
 } from "../src/lib/oryxx/real/engine/opportunity";
 import { runOpportunityExperiment } from "../src/lib/oryxx/real/engine/runner";
+import {
+  enumerateScenarios,
+  buildMovementIndex,
+  findCandidateMovements,
+} from "../src/lib/oryxx/real/engine/uncertainty";
+import { OsmAccraProvider, OSM_SOURCE } from "../src/lib/oryxx/real/providers/osm-accra";
 
 // Types
 import type {
@@ -273,7 +279,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 10. Detour calculation =============================================
   test("opportunities have detourKm >= 0 and <= config.detourToleranceKm * 2", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG);
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.detourKm).toBeGreaterThanOrEqual(0);
@@ -286,7 +292,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 11. Opportunity generation =========================================
   test("runOpportunityExperiment returns opportunities.length > 0; all dependsOnLatentSupply === true", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG);
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.dependsOnLatentSupply).toBe(true);
@@ -324,7 +330,8 @@ describe("ORYXX real-data layer", () => {
 
   // === 14. Data provenance ================================================
   test("every DataSource has isFixture === true; every opportunity has dataSources.length > 0", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG);
+    // Use fixture explicitly — the real-OSM path returns a real (non-fixture) DataSource
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
     for (const ds of result.datasets) {
       expect(ds.isFixture).toBe(true);
     }
@@ -339,8 +346,8 @@ describe("ORYXX real-data layer", () => {
 
   // === 15. Deterministic replay ==========================================
   test("runOpportunityExperiment with same config produces same opportunities.length and totalEstimatedValue", () => {
-    const r1 = runOpportunityExperiment(DEFAULT_CONFIG);
-    const r2 = runOpportunityExperiment(DEFAULT_CONFIG);
+    const r1 = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    const r2 = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
     expect(r1.opportunities.length).toBe(r2.opportunities.length);
     expect(r1.metrics.totalEstimatedValue).toBe(r2.metrics.totalEstimatedValue);
   });
@@ -370,7 +377,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 18. Confidence object ==============================================
   test("every opportunity's confidence: overall in [0,1], capacityBasis='assumed', willingnessBasis='assumed'", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG);
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.confidence.overall).toBeGreaterThanOrEqual(0);
@@ -382,7 +389,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 19. Tier correctness ===============================================
   test("opportunities have tier 1 or 2 (not 0/3/4)", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG);
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
     expect(result.opportunities.length).toBeGreaterThan(0);
     for (const o of result.opportunities) {
       expect(o.tier === 1 || o.tier === 2).toBe(true);
@@ -391,7 +398,7 @@ describe("ORYXX real-data layer", () => {
 
   // === 20. Planning horizon curve =========================================
   test("planningHorizonCurve returns 6 points; 7-day horizon opportunities >= 0-day horizon opportunities", () => {
-    const result = runOpportunityExperiment(DEFAULT_CONFIG);
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
     const curve = result.planningHorizonCurve;
     expect(curve.length).toBe(6);
     // confirm the exact horizon values
@@ -404,5 +411,116 @@ describe("ORYXX real-data layer", () => {
     expect(day7).toBeDefined();
     // more future visibility = more (or equal) opportunities
     expect(day7!.opportunities).toBeGreaterThanOrEqual(day0!.opportunities);
+  });
+
+  // === 21. Survival analysis: robust/plausible/fragile/speculative tiers ===
+  test("survival analysis produces robust/plausible/fragile/speculative counts", () => {
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false, survivalGrid: "conservative" });
+    expect(result.survival).toBeDefined();
+    expect(result.survival.totalScenarios).toBeGreaterThan(0);
+    const total = result.survival.robustCount + result.survival.plausibleCount + result.survival.fragileCount + result.survival.speculativeCount;
+    expect(total).toBeGreaterThan(0);
+    // robust opportunities per 1000 is the headline metric
+    expect(result.survival.robustPer1000).toBeGreaterThanOrEqual(0);
+    // median survival rate in [0,1]
+    expect(result.survival.medianSurvivalRate).toBeGreaterThanOrEqual(0);
+    expect(result.survival.medianSurvivalRate).toBeLessThanOrEqual(1);
+    // survival rate distribution buckets exist
+    expect(result.survival.survivalRateDistribution.length).toBe(4);
+  });
+
+  // === 22. Robust opportunities <= total opportunities ===
+  test("robust opportunities are a subset of all candidates", () => {
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false, survivalGrid: "conservative" });
+    // robust count should be <= total opportunities (central assumption set)
+    expect(result.survival.robustCount).toBeLessThanOrEqual(result.opportunities.length + 1);
+    // conservative value per 1000 should be <= central value per 1000
+    const centralPer1000 = result.metrics.totalEstimatedValue / Math.max(1, result.metrics.totalDemands) * 1000;
+    expect(result.survival.conservativeValuePer1000).toBeLessThanOrEqual(centralPer1000 + 1);
+  });
+
+  // === 23. Density fits: all 4 models computed with R² ===
+  test("density fits include linear, logarithmic, power, quadratic with R²", () => {
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false });
+    expect(result.densityFits.length).toBe(4);
+    const models = result.densityFits.map((f) => f.model);
+    expect(models).toContain("linear");
+    expect(models).toContain("logarithmic");
+    expect(models).toContain("power");
+    expect(models).toContain("quadratic");
+    for (const f of result.densityFits) {
+      expect(f.r2).toBeGreaterThanOrEqual(0);
+      expect(f.r2).toBeLessThanOrEqual(1);
+      expect(f.interpretation.length).toBeGreaterThan(0);
+    }
+  });
+
+  // === 24. Movement index: spatial/temporal candidate pruning ===
+  test("findCandidateMovements returns a subset of all movements", () => {
+    const provider = new FixtureAccraProvider(42, 1.0);
+    const nodes = provider.getGeographicNodesSync();
+    const movements = provider.getObservedMovementsSync(0, 86400);
+    const index = buildMovementIndex(movements, 1.0);
+    const demand: DemandObservation = {
+      id: "TEST-D1",
+      origin: nodes[0],
+      destination: nodes[10],
+      windowStartSec: 7 * 3600,
+      windowEndSec: 8 * 3600,
+      partySize: 1,
+      kind: "person",
+      budget: 20,
+      value: 30,
+      source: movements[0].source,
+    };
+    const candidates = findCandidateMovements(demand, index, 2.0, 0);
+    expect(candidates.length).toBeLessThanOrEqual(movements.length);
+    // all candidates should be within the temporal window
+    for (const m of candidates) {
+      expect(m.departureSec).toBeGreaterThanOrEqual(6 * 3600);
+      expect(m.departureSec).toBeLessThanOrEqual(9 * 3600);
+    }
+  });
+
+  // === 25. Uncertainty grid enumeration ===
+  test("enumerateScenarios produces the cartesian product", () => {
+    const grid = {
+      willingness: [0.1, 0.2],
+      execution: [0.5, 0.7],
+      detourToleranceKm: [1, 2],
+      capacity: [1],
+      compensationFloor: [2, 4],
+    };
+    const scenarios = enumerateScenarios(grid);
+    // 2 * 2 * 2 * 1 * 2 = 16 scenarios
+    expect(scenarios.length).toBe(16);
+    // each scenario has all fields
+    for (const s of scenarios) {
+      expect(s.willingness).toBeGreaterThanOrEqual(0.1);
+      expect(s.execution).toBeGreaterThanOrEqual(0.5);
+      expect(s.capacity).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  // === 26. Real OSM provider: pilot geography distinguishes real from fixture ===
+  test("OsmAccraProvider pilot is labelled as real OSM (not fixture)", async () => {
+    const provider = new OsmAccraProvider(42, 1.0);
+    // the pilot geography should say "Real OSM" in its name
+    const pilot = provider.getPilotGeographySync();
+    expect(pilot.name).toContain("Real OSM");
+    // the OSM data source should have isFixture=false
+    expect(OSM_SOURCE.isFixture).toBe(false);
+    expect(OSM_SOURCE.license).toContain("ODbL");
+  });
+
+  // === 27. Survival tiers are mutually exclusive ===
+  test("survival robustness tiers are mutually exclusive per candidate", () => {
+    const result = runOpportunityExperiment(DEFAULT_CONFIG, { useRealOsm: false, survivalGrid: "conservative" });
+    for (const c of result.survival.candidates) {
+      // exactly one of robust/plausible/fragile/speculative should be true
+      const flags = [c.robustness === "robust", c.robustness === "plausible", c.robustness === "fragile", c.robustness === "speculative"];
+      const trueCount = flags.filter(Boolean).length;
+      expect(trueCount).toBe(1);
+    }
   });
 });
