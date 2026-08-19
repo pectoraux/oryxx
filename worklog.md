@@ -224,3 +224,27 @@ Stage Summary:
   - Determinism holds across runs: same config → same opportunity count AND same totalEstimatedValue.
 - Performance: full runOpportunityExperiment + planningHorizonCurve + densityCurve pipeline (called ~10 times across tests 10/11/14/15/18/19/20) completes in ~325ms total test runtime — well within practical limits.
 - Next actions: none required. The real-data layer is in good shape; tests are deterministic and fast. If engine changes, the tests will catch regressions in GTFS shape, temporal feasibility, geographic matching, privacy posture, fixture-provenance labelling, confidence-field honesty, tier distribution, and planning-horizon monotonicity.
+
+---
+Task ID: real-opportunity-engine
+Agent: orchestrator (principal)
+Task: Build the real-world transportation opportunity graph V1 — provider-independent observation layer, fixture pilot, opportunity engine, and real-data experiment. Test whether real-shaped movement data contains latent supply ordinary routing misses.
+
+Work Log:
+- Audited codebase: existing canonical layer (feasibility/evaluate/pricing), 6-strategy decomposition, experiment harness. Built real-data layer to plug into the same architecture, not duplicate it.
+- Built canonical observation types (real/types.ts): GeographicNode, NetworkEdge, TransitStop/Route/Trip/Service/Departure/Feed (GTFS-normalized), ObservedMovement (Layer A), LatentSupply (Layer B — inferred with explicit assumptions), TransportationOpportunity, Confidence (decomposed), DataSource (with isFixture flag), OpportunityTier 0-4, PilotGeography.
+- Built TransportationDataProvider interface (real/providers/interface.ts): provider-independent abstraction with haversineKm, projectToKm. Future providers (Uber/Bolt/OSM/GTFS) are adapters.
+- Built FixtureAccraProvider: realistic ~8km×8km Accra Central pilot (user timezone Africa/Accra — not US/Euro default). 48 OSM-format road nodes, 72 edges, 6 GTFS transit routes (bus+metro), 180 anonymized movement trajectories. Sync + async accessors. Every DataSource labelled isFixture:true.
+- Built Opportunity Engine (real/engine/opportunity.ts): inferLatentSupply (Layer A→B with 6 explicit assumptions), computeBaseline (ordinary multimodal: rideshare OR best transit), generateOpportunities (demand × latent → TransportationOpportunity[] with reasonOrdinaryWouldMiss, dependsOnLatentSupply tag, confidence tiers), planningHorizonCurve, densityCurve.
+- CRITICAL: the engine separates multimodal routing value (transit) from latent-supply discovery value (observed movement). Only the latter counts toward the ORYXX thesis.
+- Built runner (real/engine/runner.ts): full experiment pipeline + metrics + curves + warnings + assumptions.
+- API: /api/oryxx/opportunity/run (auth, rate-limited, config clamped).
+- UI: Real-World Lab tab (4th nav) — pilot + FIXTURE-labelled data sources, headline metrics, critical value-split bar, planning-horizon + density curves, ORYXX moments with per-opportunity explanation + assumption summary, assumptions card with sensitivity, data quality warnings, 'What this does NOT prove' panel.
+- Tests (subagent parallel): 23 tests covering GTFS shape, service-day, timezone, haversine, projection, route feasibility, temporal/geographic rejection, detour bounds, capacity assumptions, privacy (no PII), provenance, deterministic replay, transit departures, pilot bbox, confidence fields, tier distribution, planning-horizon monotonicity. All 23 pass. Existing 20 synthetic tests still pass (43 total).
+- VERIFIED on production Vercel (oryxx.vercel.app → Real-World Lab tab): 200 demands, 180 movements, 142 opportunities (710 per 1000), $1289 total value, 100% latent-supply discovery, planning-horizon curve 142→196 opps (0h→24h+).
+
+Stage Summary:
+- The real-data opportunity engine works on fixture data. The mechanism discovers latent-supply opportunities ordinary routing cannot see.
+- HONEST LIMITATION: all data is fixture. The 710/1000 density is a measurement of the fixture, not empirical fact about Accra. Real movement data is required to validate density.
+- The defensible claim: "ORYXX's opportunity engine can discover latent-supply matches from movement data that ordinary multimodal routing structurally cannot see." Whether REAL movement data contains enough such opportunities is the next experiment — the adapter + fixture architecture is ready for that swap.
+- Live at oryxx.vercel.app (Real-World Lab tab). Repo at github.com/pectoraux/oryxx. 43 tests passing.
