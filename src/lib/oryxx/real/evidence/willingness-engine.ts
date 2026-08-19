@@ -60,13 +60,12 @@ function loadFhvGaps(): FhvGapObservation[] {
   }
 }
 
-// --- Generate acceptance observations from W2 evidence ---------------------
-// The FHV gaps tell us drivers were AVAILABLE for ~8.6 min median. We model
-// this as: a driver who was available for T minutes had T/30 ≈ 0.29 probability
-// of accepting a hypothetical request during that window (a behavioral
-// assumption, NOT an observation). This produces W2-tier acceptance
-// observations with explicit labelling.
-function generateAcceptanceObservations(
+// --- Generate SCENARIO acceptance estimates (NOT observations) -------------
+// CRITICAL: These are NOT empirical observations. They are scenario estimates
+// derived from W2a not-on-trip intervals + behavioral assumptions. They must
+// NEVER be fed into the empirical W3/W4 pipeline. They exist only to produce
+// a scenario model for comparison — clearly labelled SIMULATED.
+function generateScenarioEstimates(
   gaps: FhvGapObservation[],
   config: WillingnessExperimentConfig,
 ): AcceptanceObservation[] {
@@ -242,7 +241,7 @@ function computeBreakEven(model: any, detourLevels: number[]): BreakEvenAnalysis
 export function runWillingnessExperiment(config: WillingnessExperimentConfig): WillingnessExperimentResult {
   // load real W2 evidence
   const gaps = loadFhvGaps();
-  const observations = generateAcceptanceObservations(gaps, config);
+  const observations = generateScenarioEstimates(gaps, config); // SCENARIO — NOT EMPIRICAL
 
   // fit acceptance model
   const model = fitAcceptanceModel(observations);

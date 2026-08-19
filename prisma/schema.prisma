@@ -41,38 +41,102 @@ model Waitlist {
 
 // Willingness field-experiment: stores real provider responses to pooled-trip
 // offers. This produces W3 (revealed acceptance) and W4 (completed execution)
-// evidence — the critical gap in the ORYXX thesis. Provider identity is
-// pseudonymous (no PII).
+// evidence. Provider identity is pseudonymous (no PII).
+// RESEARCH INTEGRITY: enrollment-bound, consent-enforced, immutable preregistration.
+
 model AcceptanceExperiment {
-  id          String   @id @default(cuid())
-  name        String
-  description String
-  status      String   @default("preregistered") // preregistered | active | completed | abandoned
-  maxDetourKm Float    @default(5.0)
-  maxExtraTimeMin Float @default(20.0)
-  minCompensation Float @default(1.0)
-  requiresConsent Boolean @default(true)
-  consentText String?
-  // preregistration (immutable once active)
-  hypothesis  String?
-  sampleTarget Int    @default(100)
-  primaryOutcome String @default("W3_acceptance_rate")
-  stoppingRule String?
-  randomizationSeed Int @default(42)
-  isImmutable Boolean  @default(false)
+  id              String   @id @default(cuid())
+  name            String
+  description     String
+  status          String   @default("DRAFT") // DRAFT | PREREGISTERED | ACTIVE | COMPLETED | ABANDONED
+  // safety constraints
+  maxDetourKm     Float    @default(5.0)
+  maxExtraTimeMin Float    @default(20.0)
+  minCompensation Float    @default(1.0)
+  // preregistration (immutable after ACTIVE)
+  hypothesis      String?
+  population      String?
+  geography       String?
+  providerType    String?
+  sampleTarget    Int      @default(100)
+  primaryOutcome  String   @default("W3_acceptance_rate")
+  secondaryOutcomes String? // JSON array
+  analysisMethod  String?
+  stoppingRule    String?
+  randomizationSeed Int   @default(42)
+  preregistrationHash String? // SHA-256 of canonical design
   preregisteredAt String?
-  responses   ProviderResponse[]
+  // economic assumptions (labelled, not observed)
+  assumedUserSavings Float @default(4.0)
+  assumedFailureCost Float @default(1.0)
+  assumedOryxxMargin Float @default(0.50)
+  // consent
+  requiresConsent Boolean  @default(true)
+  consentText     String?
+  consentVersion  Int      @default(1)
+  // relations
+  enrollments     ExperimentEnrollment[]
+  responses       ProviderResponse[]
+  events          ExperimentEvent[]
+  consents        ExperimentConsent[]
 
   @@index([status])
+}
+
+// Enrollment: binds a pseudonymous participant to an experiment.
+// The participantId is SERVER-GENERATED, never client-supplied.
+model ExperimentEnrollment {
+  id              String   @id @default(cuid())
+  experimentId    String
+  experiment      AcceptanceExperiment @relation(fields: [experimentId], references: [id])
+  // server-generated pseudonymous ID (no PII)
+  participantId   String   @unique
+  // enrollment token (used for offer authorization)
+  enrollmentToken String   @unique
+  // treatment cell assigned at enrollment (immutable)
+  assignedCellId  String?
+  // timestamps
+  enrolledAt      DateTime @default(now())
+  withdrawnAt     DateTime?
+  status          String   @default("active") // active | withdrawn
+  // relations
+  responses       ProviderResponse[]
+  consents        ExperimentConsent[]
+
+  @@index([experimentId])
+  @@index([participantId])
+}
+
+// Consent: server-enforced prerequisite for participation.
+// No response is accepted without a valid, non-withdrawn consent record.
+model ExperimentConsent {
+  id              String   @id @default(cuid())
+  experimentId    String
+  experiment      AcceptanceExperiment @relation(fields: [experimentId], references: [id])
+  enrollmentId    String
+  enrollment      ExperimentEnrollment @relation(fields: [enrollmentId], references: [id])
+  participantId   String
+  consentVersion  Int
+  consentTextHash String   // hash of the consent text at time of consent
+  consentText     String
+  consentedAt     DateTime @default(now())
+  withdrawnAt     DateTime?
+
+  @@index([experimentId])
+  @@index([enrollmentId])
 }
 
 model ProviderResponse {
   id              String   @id @default(cuid())
   experimentId    String
   experiment      AcceptanceExperiment @relation(fields: [experimentId], references: [id])
-  // pseudonymous provider ID (no PII)
-  providerId      String
-  // the offer presented
+  // enrollment-bound: the response must belong to an enrolled participant
+  enrollmentId    String
+  enrollment      ExperimentEnrollment @relation(fields: [enrollmentId], references: [id])
+  // server-derived from enrollment (NOT client-supplied)
+  participantId   String
+  // the offer
+  treatmentCellId String
   compensation    Float
   detourKm        Float
   extraTimeMin    Float
@@ -83,26 +147,43 @@ model ProviderResponse {
   destName        String
   hourOfDay       Int
   // state machine
-  state           String   @default("OFFER_CREATED") // see pilot.ts VALID_TRANSITIONS
-  // decision
-  decision        String?  // accept | decline | not_available | ignore (null until responded)
-  // execution (if accepted)
+  state           String   @default("OFFER_CREATED")
+  decision        String?  // accept | decline | not_available | ignore
+  // execution
   executed        Boolean?
-  completed        Boolean?
+  completed       Boolean?
   executionFailureReason String?
-  // evidence tier (computed from state)
-  evidenceTier    String   @default("W0") // W2a | W2b | W3 | W4
-  // consent
-  consentObtained Boolean  @default(false)
+  // evidence tier (computed from state, NOT from client)
+  evidenceTier    String   @default("NONE")
   // timing
   offerPresentedAt String?
+  offerExpiresAt  String?  // offer becomes PROVIDER_IGNORED after this
   providerViewedAt String?
   decisionAt      String?
   timestamp       DateTime @default(now())
 
   @@index([experimentId])
-  @@index([providerId])
-  @@index([decision])
+  @@index([enrollmentId])
+  @@index([participantId])
   @@index([state])
   @@index([evidenceTier])
+}
+
+// Append-only event log: the scientific audit trail.
+// Never updated, only inserted.
+model ExperimentEvent {
+  id              String   @id @default(cuid())
+  experimentId    String
+  experiment      AcceptanceExperiment @relation(fields: [experimentId], references: [id])
+  offerId         String
+  participantId   String
+  fromState       String?  // null for initial creation
+  toState         String
+  timestamp       DateTime @default(now())
+  actorType       String   // system | participant | admin
+  actorId         String
+  metadataHash    String
+
+  @@index([experimentId])
+  @@index([offerId])
 }

@@ -54,7 +54,10 @@ export const WILLINGNESS_TIERS: WillingnessTierMeta[] = [
   { tier: "W4", name: "Completed execution", description: "Provider accepted AND completed the pooled trip. Strongest evidence.", strength: 4, isEmpirical: true, marketplaceSufficient: true, label: "EMPIRICAL" },
 ];
 
-// --- Acceptance observation (one data point) --------------------------------
+// --- Acceptance observation (SCENARIO/SIMULATED only — NEVER empirical) ------
+// This type is used ONLY by the scenario model. It must NEVER appear in the
+// empirical W3/W4 pipeline. Real provider decisions are stored as ProviderResponse
+// in the database, not as AcceptanceObservation.
 export interface AcceptanceObservation {
   id: string;
   providerId: string; // pseudonymous
