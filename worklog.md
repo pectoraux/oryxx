@@ -190,3 +190,37 @@ Stage Summary:
 - Live at oryxx.vercel.app (Experiment Lab tab). Repo at github.com/pectoraux/oryxx.
 - The experiment can now falsify the thesis AND decompose what survives.
 - Thesis reformulation: ORYXX's value is multimodal opportunity discovery, not market coordination. The market mechanism is not yet justified by the data.
+
+---
+Task ID: real-tests-parallel
+Agent: real-tests
+Task: Write automated tests for the ORYXX real-world opportunity layer (fixture provider, opportunity engine, experiment runner) — a single Bun test file at tests/oryxx-real.test.ts covering the 20 spec items (GTFS parsing, service-day, time-zone, haversine, projection, route feasibility, temporal/geographic/movement-window matching, detour, opportunity generation, capacity assumptions, privacy, provenance, deterministic replay, transit departures, pilot geography, confidence, tier, planning-horizon curve).
+
+Work Log:
+- Read prior worklog (Tasks 0 / 8 / auth-deploy / 2-parallel / market-simulator / tests-parallel / scientific-harness / decomposition) and surveyed every module under test: real/types.ts, real/providers/interface.ts (haversineKm, projectToKm, secToTime, timeToSec), real/providers/fixture-accra.ts (FixtureAccraProvider + build* exports + ACCRA_PILOT/ACCRA_FIXTURE_SOURCE), real/engine/opportunity.ts (inferLatentSupply, computeBaseline, generateOpportunities, generateDemands, planningHorizonCurve, densityCurve), real/engine/runner.ts (runOpportunityExperiment). Confirmed buildEdges(nodes) takes a nodes arg (task brief said buildEdges() — minor brief inaccuracy, not used in any test), buildTransitFeed() takes no args, inferLatentSupply returns { supply, assumptions }, and generateOpportunities expects baseline.perDemand (Map), not the full baseline result.
+- Wrote tests/oryxx-real.test.ts using `bun:test` with 23 tests organized under one describe("ORYXX real-data layer") block. 20 spec items; spec items 1 and 3 each split into 2-3 sub-tests for clarity (GTFS parsing → feed-shape / time-ordering / route-existence; time-zone → secToTime / timeToSec). Used relative imports only (no path aliases). Shared DEFAULT_CONFIG: seed 42, numDemands 50, movementDensity 1.0, planningHorizonSec 0, willingness 0.5, detourToleranceKm 3.0, hourFilter 7 (morning rush — chosen so the fixture produces a non-empty opportunity set; hourFilter=7 keeps movements at hours 6/7/8 which is where morning-peak fixture departures land, and demands are 30-min windows inside 7:00-7:30).
+- First run: ALL 23 tests passed, 0 failures, 4700 expect() calls, 322ms total. Re-ran to confirm stability: 23 pass, 0 fail, 307ms. No test-side fixes needed and no engine bugs found.
+- Notable design choices per test:
+  * Test 1 (GTFS): verified stopTimes[i].arrivalSec <= stopTimes[i].departureSec (dwell) AND stopTimes[i].arrivalSec > stopTimes[i-1].departureSec (no time travel between consecutive stops). Both hold in the fixture.
+  * Test 6 (route feasibility): demand lookup by id; asserts o.departureSec within [windowStartSec, windowEndSec] AND o.opportunityCost < o.baselineCost (strictly less — the engine's `if (opportunityCost >= base.cost) continue` guarantees this).
+  * Test 7 (temporal): constructed a single demand (window 7:00-7:30) and a single latent supply on the SAME route but departing 6:00 (before window). Engine's `if (ls.departureSec < d.windowStartSec || ...) continue` skips it → 0 opportunities.
+  * Test 8 (geographic): demand at {0,0}→{3,0}, supply at {50,50}→{53,50} (~70km off-route) but within the time window. Engine's isOnRoute returns feasible=false (detour ~70km >> 2km tolerance) → 0 opportunities.
+  * Test 10 (detour): upper bound is detourToleranceKm*2 (loose sanity ceiling). Engine actually averages pickup+dropoff detour against ls.assumedDetourToleranceKm, so observed detourKm <= tolerance, well within the ceiling.
+  * Test 13 (privacy): check anonymized===true AND absence of userId/email/phone/name/driverId/licensePlate fields on the raw movement record.
+  * Test 15 (deterministic replay): asserts r1.opportunities.length === r2.opportunities.length AND r1.metrics.totalEstimatedValue === r2.metrics.totalEstimatedValue. Both hold (the result.generatedAt ISO timestamp differs between runs but is not under test).
+  * Test 20 (planning horizon curve): asserts curve.length === 6, asserts the exact horizon values 0 and 7*24*3600 are present, asserts day7.opportunities >= day0.opportunities (more future visibility = more or equal opportunities). The fixture's morning-rush concentration plus 7-day window expansion yields strictly more matches at the 7-day horizon in practice.
+
+Stage Summary:
+- Tests written: 23 (20 spec items + 3 sub-test splits). Tests passing: 23/23. Tests failing: 0.
+- File created: tests/oryxx-real.test.ts (single file, as required). Run with `cd /home/z/my-project && bun test tests/oryxx-real.test.ts`.
+- Engine bugs found: NONE. The real-data layer engine behaves exactly as documented:
+  - GTFS fixture produces well-formed stopTimes (no time travel within or across stops), every trip references a real route, weekday service correctly mon-fri=true.
+  - inferLatentSupply pins assumedCapacity=1 and assumedWillingness=config.willingness exactly, with detour tolerance also pinned from config.
+  - generateOpportunities enforces temporal window, geographic on-route, capacity, AND economic (opportunityCost < baselineCost) feasibility — confirmed by both the positive case (test 6) and the two negative cases (tests 7 and 8).
+  - Every opportunity's confidence has overall in [0.2, 0.85] ⊂ [0,1], capacityBasis='assumed', willingnessBasis='assumed' (the engine never claims observed capacity/willingness — explicit honesty about Layer-B assumptions).
+  - Every opportunity's tier ∈ {1, 2} (tier 0/3/4 not produced by this engine version, matching the spec).
+  - All DataSources (datasets + per-opportunity dataSources) carry isFixture=true; no movement record carries personal identifiers.
+  - planningHorizonCurve returns exactly 6 points and is monotonic non-decreasing in opportunity count as horizon grows (more visibility = more matches).
+  - Determinism holds across runs: same config → same opportunity count AND same totalEstimatedValue.
+- Performance: full runOpportunityExperiment + planningHorizonCurve + densityCurve pipeline (called ~10 times across tests 10/11/14/15/18/19/20) completes in ~325ms total test runtime — well within practical limits.
+- Next actions: none required. The real-data layer is in good shape; tests are deterministic and fast. If engine changes, the tests will catch regressions in GTFS shape, temporal feasibility, geographic matching, privacy posture, fixture-provenance labelling, confidence-field honesty, tier distribution, and planning-horizon monotonicity.

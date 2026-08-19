@@ -56,3 +56,4 @@ server.log
 mini-services/*/node_modules/
 mini-services/*/service.log
 mini-services/*/.env*
+tool-results/
