@@ -116,6 +116,7 @@ model ExperimentEnrollment {
   responses       ProviderResponse[]
   consents        ExperimentConsent[]
 
+  @@unique([experimentId, accountEmail])
   @@index([experimentId])
   @@index([participantId])
   @@index([accountEmail])

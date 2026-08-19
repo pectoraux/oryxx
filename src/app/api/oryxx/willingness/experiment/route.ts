@@ -194,7 +194,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "PREREGISTRATION HASH MISMATCH at enrollment." }, { status: 500 });
     }
     const existing = await db.experimentEnrollment.findFirst({ where: { accountEmail: email, experimentId } });
-    if (existing) return NextResponse.json({ error: "Account already enrolled." }, { status: 409 });
+    if (existing) return NextResponse.json({ error: "Account already enrolled in this experiment." }, { status: 409 });
     const participantId = `P-${randomBytes(8).toString("hex")}`;
     const enrollmentToken = randomBytes(24).toString("hex");
     const cells = generateTreatmentCells(design);
@@ -212,6 +212,11 @@ export async function POST(req: Request) {
         break;
       } catch (err: any) {
         lastErr = err;
+        // P2002 = unique constraint violation (duplicate enrollment) — return 409, do NOT retry
+        if (err?.code === "P2002") {
+          return NextResponse.json({ error: "Account already enrolled in this experiment." }, { status: 409 });
+        }
+        // P2034 = serialization conflict — retry with backoff
         if (err?.code !== "P2034") throw err;
         await new Promise(r => setTimeout(r, 50 * Math.pow(2, attempt)));
       }
