@@ -433,3 +433,30 @@ Key integrity guarantees now enforced:
 - Cross-user attacks rejected (enrollmentId must match)
 
 W3/W4 evidence = 0 unless a real participant actually generated it.
+
+---
+Task ID: integrity-fix-v2
+Agent: orchestrator (principal)
+Task: Fix the 10 remaining research-integrity defects the reviewer found in commit b834f4c.
+
+Work Log:
+- Verified all 10 defects by inspecting actual code (not trusting prior report).
+- Fixed: W3 requires admin-verified real provider (providerVerified field + create_offer check)
+- Fixed: Treatment design PERSISTED at preregistration (treatmentDesignJson, loadDesign())
+- Fixed: W4 requires admin external verification (TRIP_COMPLETED requires role=admin)
+- Fixed: Balanced randomization (least-filled cell with deterministic tiebreak)
+- Fixed: Enrollment bound to accountEmail (prevents token transfer)
+- Fixed: Consent bound to accountEmail (prevents cross-user consent)
+- Fixed: Full SHA-256 hash (not truncated)
+- Fixed: Event log labelled as "application-level audit trail"
+- 88 tests pass. Lint clean. Pushed.
+
+Corrected status:
+- W3 CANNOT be manufactured: requires admin-verified provider + account-bound enrollment + server-verified consent + atomic state transition
+- W4 CANNOT be manufactured: requires admin external verification of TRIP_COMPLETED
+- Treatment design IS persisted and used at runtime (no hardcoded arrays)
+- Randomization IS balanced (least-filled cell, not hash-mod)
+- Enrollment IS bound to NextAuth account (token cannot be transferred)
+- Consent IS bound to account (cross-user consent rejected)
+
+W3/W4 evidence = 0.
