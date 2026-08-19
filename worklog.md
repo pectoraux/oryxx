@@ -363,3 +363,25 @@ HONEST CONCLUSION:
 - W3 = 0. ORYXX has NOT crossed the gap from capacity to bookable supply.
 - The field experiment is instrumented but NOT deployed — ethical/legal requirements for a real field experiment with human participants are not yet satisfied.
 - The single missing measurement: present a real pooled-trip offer to real drivers and record accept/declide (W3).
+
+---
+Task ID: w3-pilot
+Agent: orchestrator (principal)
+Task: Make the W3 experiment research-ready without faking results. Build state machine, preregistration, randomization, safety, sample-size calculator, marketplace decision rule.
+
+Work Log:
+- Built experiment state machine (pilot.ts): OFFER_CREATED→PRESENTED→VIEWED→ACCEPTED(W3)→STARTED→COMPLETED(W4)/CANCELLED. isValidTransition enforces. evidenceTierForState ensures only ACCEPTED=W3, only COMPLETED=W4.
+- Built preregistration: PreregisteredExperiment with hypothesis, sampleTarget, primaryOutcome, stoppingRule, randomizationSeed, isImmutable.
+- Built randomized treatment assignment: deterministic hash-based, balanced, excludes unsafe combinations.
+- Built safety validator: max detour, max time, min compensation, max passengers enforced.
+- Built sample-size calculator: two-proportion z-test (alpha=0.05, power=0.80).
+- Built per-cell break-even economics + marketplace decision rule (NOT_TESTED when W3=0).
+- Updated DB schema: ProviderResponse has state + timing fields; AcceptanceExperiment has preregistration fields.
+- Updated API routes to use state machine transitions.
+- Built W3PilotStatusCard UI: IMPLEMENTED badges for all components, ZERO badges for W3/W4, PILOT STATUS: PREREGISTERED — NOT ACTIVE.
+- 12 new tests. 88 total, all pass. Lint clean.
+
+HONEST CONCLUSION:
+- W3/W4 evidence remains ZERO.
+- The pilot is research-ready but NOT deployed.
+- The marketplace thesis verdict: NOT_TESTED.
