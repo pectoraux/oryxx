@@ -409,3 +409,27 @@ Final evidence state:
   W4  completed real offer               ✗ (requires W3 first)
 
 Marketplace verdict: NOT_TESTED.
+
+---
+Task ID: research-integrity-fix
+Agent: orchestrator (principal)
+Task: Fix 12 research-integrity defects in the W3 pilot. Make the experiment trustworthy before any real human participation.
+
+Work Log:
+- Audited actual code: found synthetic acceptance in empirical pipeline, false evidence tier mapping (OFFER_CREATED→W2a), client-supplied providerId, body-trusted consent, non-immutable preregistration, hardcoded z values, no event log, no offer expiry, aggregate marketplace decision.
+- Fixed all 12 defects (see commit message for details).
+- 88 tests pass. Lint clean. Pushed.
+
+Key integrity guarantees now enforced:
+- W3 can ONLY be created by PROVIDER_ACCEPTED state transition (atomic, enrollment-bound)
+- W4 can ONLY be created by TRIP_COMPLETED state transition
+- W2a observations CANNOT become W3 (application states → NONE, not W2a)
+- Synthetic acceptance is structurally separate (ScenarioEstimate, not AcceptanceObservation)
+- Participant identity is server-generated (enrollment token, not body field)
+- Consent is server-verified (DB record required before offer creation)
+- Preregistration is immutable after ACTIVE (state machine + hash)
+- All transitions are logged to append-only ExperimentEvent
+- Offer expiry enforced (expired → PROVIDER_IGNORED, not W3)
+- Cross-user attacks rejected (enrollmentId must match)
+
+W3/W4 evidence = 0 unless a real participant actually generated it.
