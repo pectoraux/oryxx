@@ -3,9 +3,9 @@
 
 import { test, expect, describe } from "bun:test";
 import {
-  isValidTransition,
+  isValidResearchTransition,
   VALID_TRANSITIONS,
-  evidenceTierForState,
+  researchEvidenceForState,
   validateOfferSafety,
   assignTreatment,
   generateTreatmentCells,
@@ -20,27 +20,27 @@ import type { TreatmentCell, PreregisteredExperiment } from "../src/lib/oryxx/re
 describe("ORYXX W3 Pilot — state machine + evidence integrity", () => {
   // === 1. Valid state transitions ===
   test("state machine allows OFFER_CREATED → OFFER_PRESENTED → PROVIDER_VIEWED → PROVIDER_ACCEPTED", () => {
-    expect(isValidTransition("OFFER_CREATED", "OFFER_PRESENTED")).toBe(true);
-    expect(isValidTransition("OFFER_PRESENTED", "PROVIDER_VIEWED")).toBe(true);
-    expect(isValidTransition("PROVIDER_VIEWED", "PROVIDER_ACCEPTED")).toBe(true);
+    expect(isValidResearchTransition("OFFER_CREATED", "OFFER_PRESENTED")).toBe(true);
+    expect(isValidResearchTransition("OFFER_PRESENTED", "PROVIDER_VIEWED")).toBe(true);
+    expect(isValidResearchTransition("PROVIDER_VIEWED", "PROVIDER_ACCEPTED")).toBe(true);
   });
 
   // === 2. Invalid transitions are rejected ===
   test("invalid transitions are rejected (W2a CANNOT become W3 without a decision)", () => {
-    expect(isValidTransition("OFFER_CREATED", "PROVIDER_ACCEPTED")).toBe(false); // must go through PRESENTED → VIEWED
-    expect(isValidTransition("PROVIDER_DECLINED", "PROVIDER_ACCEPTED")).toBe(false); // can't un-decline
-    expect(isValidTransition("TRIP_CANCELLED", "TRIP_COMPLETED")).toBe(false); // can't un-cancel
+    expect(isValidResearchTransition("OFFER_CREATED", "PROVIDER_ACCEPTED")).toBe(false); // must go through PRESENTED → VIEWED
+    expect(isValidResearchTransition("PROVIDER_DECLINED", "PROVIDER_ACCEPTED")).toBe(false); // can't un-decline
+    expect(isValidResearchTransition("TRIP_CANCELLED", "TRIP_COMPLETED")).toBe(false); // can't un-cancel
   });
 
   // === 3. Evidence tier for each state ===
   test("only PROVIDER_ACCEPTED creates W3, only TRIP_COMPLETED creates W4", () => {
-    expect(evidenceTierForState("OFFER_CREATED")).toBe("NONE");
-    expect(evidenceTierForState("OFFER_PRESENTED")).toBe("NONE");
-    expect(evidenceTierForState("PROVIDER_VIEWED")).toBe("NONE");
-    expect(evidenceTierForState("PROVIDER_ACCEPTED")).toBe("W3");
-    expect(evidenceTierForState("TRIP_STARTED")).toBe("W3");
-    expect(evidenceTierForState("TRIP_COMPLETED")).toBe("W4");
-    expect(evidenceTierForState("PROVIDER_DECLINED")).toBe("NONE");
+    expect(researchEvidenceForState("OFFER_CREATED")).toBe("NONE");
+    expect(researchEvidenceForState("OFFER_PRESENTED")).toBe("NONE");
+    expect(researchEvidenceForState("PROVIDER_VIEWED")).toBe("NONE");
+    expect(researchEvidenceForState("PROVIDER_ACCEPTED")).toBe("W3-R");
+    expect(researchEvidenceForState("TRIP_STARTED")).toBe("W3-R");
+    expect(researchEvidenceForState("TRIP_COMPLETED")).toBe("W4-R");
+    expect(researchEvidenceForState("PROVIDER_DECLINED")).toBe("NONE");
   });
 
   // === 4. Offer safety validator ===
@@ -123,18 +123,18 @@ describe("ORYXX W3 Pilot — state machine + evidence integrity", () => {
     const cells: TreatmentCell[] = [{ id: "test", compensation: 3, detourKm: 2, extraTimeMin: 5, advanceNoticeMin: 0 }];
     const decision = evaluateMarketplaceDecision([], 30);
     expect(decision.verdict).toBe("NOT_TESTED");
-    expect(decision.reason).toContain("No W3 evidence");
+    expect(decision.reason).toContain("No W3-R evidence");
   });
 
   // === 11. Evidence counts start at zero ===
   test("emptyEvidenceCounts has all zeros", () => {
     const counts = emptyEvidenceCounts();
-    expect(counts.w0).toBe(0);
-    expect(counts.w1).toBe(0);
+    expect(counts.w3r).toBe(0);
+    expect(counts.w3m).toBe(0);
     expect(counts.w2a).toBe(0);
     expect(counts.w2b).toBe(0);
-    expect(counts.w3).toBe(0);
-    expect(counts.w4).toBe(0);
+    expect(counts.w3r).toBe(0);
+    expect(counts.w4r).toBe(0);
     expect(counts.acceptanceRate).toBe(null);
     expect(counts.completionRate).toBe(null);
   });

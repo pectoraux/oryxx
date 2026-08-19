@@ -26,8 +26,8 @@ export async function GET(req: Request) {
   if (!experimentId) {
     // aggregate across all experiments
     const allResponses = await db.providerResponse.findMany({ select: { state: true, evidenceTier: true, decision: true } });
-    const w3 = allResponses.filter((r) => r.evidenceTier === "W3").length;
-    const w4 = allResponses.filter((r) => r.evidenceTier === "W4").length;
+    const w3 = allResponses.filter((r) => r.evidenceTier === "W3-R").length;
+    const w4 = allResponses.filter((r) => r.evidenceTier === "W4-R").length;
     return NextResponse.json({
       totalResponses: allResponses.length,
       w3Count: w3,
@@ -99,9 +99,9 @@ export async function GET(req: Request) {
     marketplaceDecision: decision,
     events: events.map((e) => ({ ...e, participantId: e.participantId.substring(0, 8) + "…" })),
     totalResponses: responses.length,
-    w3Count: responses.filter((r) => r.evidenceTier === "W3").length,
-    w4Count: responses.filter((r) => r.evidenceTier === "W4").length,
-    hasW3Evidence: responses.some((r) => r.evidenceTier === "W3"),
-    hasW4Evidence: responses.some((r) => r.evidenceTier === "W4"),
+    w3Count: responses.filter((r) => r.evidenceTier === "W3-R").length,
+    w4Count: responses.filter((r) => r.evidenceTier === "W4-R").length,
+    hasW3Evidence: responses.some((r) => r.evidenceTier === "W3-R"),
+    hasW4Evidence: responses.some((r) => r.evidenceTier === "W4-R"),
   });
 }

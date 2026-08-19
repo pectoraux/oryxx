@@ -29,7 +29,7 @@ import { authOptions } from "@/lib/auth/options";
 import { db } from "@/lib/db";
 import {
   isValidTransition,
-  evidenceTierForState,
+  researchEvidenceForState,
   validateOfferSafety,
   assignTreatment,
   generateTreatmentCells,
@@ -46,7 +46,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Helper: load the PERSISTED treatment design from the experiment record
-function loadDesign(exp: any): PreregisteredDesign {
+function loadDesignStrict(exp: any): PreregisteredDesign {
   if (exp.treatmentDesignJson) {
     try { return JSON.parse(exp.treatmentDesignJson); } catch {}
   }
@@ -80,8 +80,8 @@ export async function GET(req: Request) {
       where: { experimentId: exp.id },
       select: { state: true, evidenceTier: true, decision: true },
     });
-    const w3 = responses.filter((r) => r.evidenceTier === "W3").length;
-    const w4 = responses.filter((r) => r.evidenceTier === "W4").length;
+    const w3 = responses.filter((r) => r.evidenceTier === "W3-R").length;
+    const w4 = responses.filter((r) => r.evidenceTier === "W4-R").length;
     return {
       ...exp,
       totalResponses: responses.length,
@@ -228,7 +228,7 @@ export async function POST(req: Request) {
     const enrollmentToken = randomBytes(24).toString("hex");
 
     // load PERSISTED treatment design (NOT hardcoded)
-    const design = loadDesign(exp);
+    const design = loadDesignStrict(exp);
     const cells = generateTreatmentCells(design);
 
     // BALANCED randomization: count existing assignments per cell
@@ -322,7 +322,7 @@ export async function POST(req: Request) {
     }
 
     // DEFECT 4 FIX: load PERSISTED treatment design (NOT hardcoded)
-    const design = loadDesign(exp);
+    const design = loadDesignStrict(exp);
     const cells = generateTreatmentCells(design);
     const cell = cells.find((c) => c.id === enrollment.assignedCellId) ?? cells[0];
 
@@ -410,7 +410,7 @@ export async function POST(req: Request) {
       }, { status: 403 });
     }
 
-    const newTier = evidenceTierForState(newState);
+    const newTier = researchEvidenceForState(newState);
     const decision = newState === "PROVIDER_ACCEPTED" ? "accept"
       : newState === "PROVIDER_DECLINED" ? "decline"
       : newState === "PROVIDER_UNAVAILABLE" ? "not_available"
