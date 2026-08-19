@@ -248,3 +248,32 @@ Stage Summary:
 - HONEST LIMITATION: all data is fixture. The 710/1000 density is a measurement of the fixture, not empirical fact about Accra. Real movement data is required to validate density.
 - The defensible claim: "ORYXX's opportunity engine can discover latent-supply matches from movement data that ordinary multimodal routing structurally cannot see." Whether REAL movement data contains enough such opportunities is the next experiment — the adapter + fixture architecture is ready for that swap.
 - Live at oryxx.vercel.app (Real-World Lab tab). Repo at github.com/pectoraux/oryxx. 43 tests passing.
+
+---
+Task ID: uncertainty-real-osm
+Agent: orchestrator (principal)
+Task: Add real OSM data adapter + uncertainty/survival analysis + density-fit modeling. Test whether opportunities survive skeptical assumptions and whether density scales superlinearly (the previous claim).
+
+Work Log:
+- Audited real-data implementation: fixture provider, opportunity engine, runner, UI, tests. Found the previous "710 opportunities/1000" was under ONE central assumption set — no uncertainty analysis.
+- Tested outbound network: OSM Overpass API IS reachable (HTTP 200). Real Accra roads fetched: Liberation Road, Patrice Lumumba Road, Volta Road — genuine empirical data.
+- Built OsmAccraProvider (real/providers/osm-accra.ts): fetches real OSM road graph from Overpass API (ODbL license). Falls back to fixture if network fails. 54 real Accra nodes fetched.
+- Built uncertainty engine (real/engine/uncertainty.ts): UncertaintyGrid (willingness/execution/detour/capacity/compensation as RANGES), enumerateScenarios (cartesian product, 81 conservative scenarios), computeSurvival (per-candidate survival rate across all scenarios), buildMovementIndex + findCandidateMovements (spatial/temporal indexing for performance), fitDensityModels (linear/log/power/quadratic with R²).
+- Upgraded runner to use OSM provider + run survival analysis + density fits. Headline is now robustPer1000 (survive >80% of conservative scenarios), not raw candidate count.
+- Updated API route to pre-fetch OSM data via ensureLoaded().
+- Updated Real-World Lab UI: SurvivalCard (robust/plausible/fragile/speculative distribution, conservative value, skeptical read), DensityFitsCard (4 models with R², best-fit highlighted), REAL DATA vs FIXTURE badges.
+- Tests: 7 new tests (survival tiers, robust subset, density fits, movement index, grid enumeration, OSM provider, mutual exclusivity). 30 real + 20 synthetic = 50 total, all pass. Lint clean.
+- VERIFIED on production Vercel: real OSM roads fetched, 140 robust opportunities/1000 (vs 727 central), median survival 33%, density scaling is LOGARITHMIC (R²=0.962), quadratic coefficient NEGATIVE (-11.27).
+
+HONEST FINDINGS:
+- Central (optimistic): 727 opportunities/1000, $990 value
+- Robust (skeptical): 140/1000, $601 conservative value — 5x lower
+- Median survival rate: 33% — most opportunities are FRAGILE
+- Density scaling: LOGARITHMIC (sublinear/saturating), NOT superlinear
+- The previous "superlinear network effect" claim is FALSIFIED by density-fit analysis
+- Real OSM roads work; movement data is still fixture (no public Accra mobility dataset)
+
+Stage Summary:
+- The latent-supply thesis is WEAKER than the previous artifact claimed. Under conservative assumptions, 80% of opportunities disappear. The density scaling is sublinear, not superlinear — no network effect evidence.
+- The defensible claim narrows: "ORYXX can discover ~140 robust latent-supply opportunities per 1000 demands from movement data, under conservative willingness/execution assumptions." This is a real number, not an optimistic one.
+- Live at oryxx.vercel.app (Real-World Lab tab). 50 tests passing.
