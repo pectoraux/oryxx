@@ -156,3 +156,37 @@ Stage Summary:
 - Acceptance criteria A-L all met: identical feasibility (A), identical welfare (B), price transfers can't create welfare (C, verified by invariant), configurable empty-km (D), 100 seeds supported (E), ORYXX visibly loses on empty-km in no-deadhead regime (F), exact B&B solver works for ≤16 demands (G), heuristic gap measurable (H), UI distinguishes SIMULATION FACT/ASSUMPTION/MODEL LIMITATION (I), reproducible from config+seed (J), no secrets (K), tests pass (L).
 - HONEST FINDING: ORYXX's welfare advantage is robust (100% win rate in most regimes) but the empty-vehicle-km advantage is regime-dependent. In no-deadhead and low-pooling regimes, ORYXX is EMPTIER than ordinary routing in 100% / 33% of seeds respectively — because coordination dispatches more vehicles to serve more demand. The thesis survives on welfare but the "waste removed" story is more nuanced than the previous simulator claimed.
 - Live at oryxx.vercel.app (Experiment Lab tab).
+
+---
+Task ID: decomposition
+Agent: orchestrator (principal)
+Task: Isolate what actually creates ORYXX's value via advantage decomposition (A→B→C→D→E→F ladder). Add superlinearity sweep. Change metric reporting to a vector with ORYXX Moments as the clean thesis test.
+
+Work Log:
+- Built strategy B (multimodal planner): each demand independently picks best from ALL modes (rideshare/transit/carpool/truck), NO cross-demand sharing. Isolates multimodal routing value.
+- Built strategy C (pooling fixed-price): cross-demand capacity sharing at fixed market prices, no negotiation. Isolates physical coordination value.
+- Updated StrategyId type to include 6 strategies (ordinary/multimodal/pooling-fixed/centralized/oryxx/clairvoyant) with ladder positions and allowsCrossDemandSharing flag.
+- Added oryxxMomentsCount to CanonicalMetrics: counts matches using non-RSM supply (transit/carpool/truck) — opportunities invisible to ordinary routing. This is the clean thesis metric.
+- Built advantage decomposition: B-A (multimodal routing), C-B (physical coordination), D-C (negotiated pricing), E-D (ORYXX market mechanism), F-E (optimization gap). Each delta has mean, winRate, p10, p90.
+- Built superlinearity sweep: tests whether ORYXX advantage grows superlinearly with information density. Quadratic fit + R². NPD density → superlinear (network effect). Demand density → sublinear (saturating).
+- Updated Experiment Lab UI: ORYXX Moments banner (headline), Decomposition Ladder with "≈ zero" labels on mechanisms that add no value, metric vector reporting, methodology panel.
+- API: /api/oryxx/experiment/superlinearity (4 dimensions).
+- Tests: 20 pass. Lint clean.
+
+HONEST FINDING (verified on production Vercel):
+- B-A (multimodal routing) = +106.3, winRate 100% → THIS is the entire ORYXX advantage
+- C-B (physical coordination) ≈ 0 → pooling adds nothing on top of multimodal
+- D-C (negotiated pricing) ≈ 0 → economic optimization adds nothing
+- E-D (ORYXX market mechanism) ≈ 0 → the market mechanism adds nothing measurable
+- F-E (optimization gap) ≈ 0 → heuristic reaches exact optimum at small scale
+
+The previous "ORYXX beats ordinary by 50% welfare" was really "multimodal routing beats rideshare-only by 50%". The coordination + market machinery contributed nothing measurable in the tested regimes.
+
+The defensible claim is now narrower and cleaner: "ORYXX discovers transportation opportunities (transit/carpool/truck) that ordinary routing cannot see" — ~9 per seed, 91 across 10 seeds. The market mechanism itself adds no measurable value over simple multimodal awareness.
+
+Superlinearity: NPD density creates a superlinear advantage (network effect confirmed, R²=0.995). Demand density creates a sublinear/saturating advantage.
+
+Stage Summary:
+- Live at oryxx.vercel.app (Experiment Lab tab). Repo at github.com/pectoraux/oryxx.
+- The experiment can now falsify the thesis AND decompose what survives.
+- Thesis reformulation: ORYXX's value is multimodal opportunity discovery, not market coordination. The market mechanism is not yet justified by the data.
