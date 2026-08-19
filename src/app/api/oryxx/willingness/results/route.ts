@@ -9,7 +9,7 @@ import {
   computeCellEconomics,
   wilsonCI,
   evaluateMarketplaceDecision,
-  type PreregisteredDesign,
+  loadDesignStrict,
   type CellResult,
 } from "@/lib/oryxx/real/evidence/pilot";
 
@@ -41,19 +41,8 @@ export async function GET(req: Request) {
   const exp = await db.acceptanceExperiment.findUnique({ where: { id: experimentId } });
   if (!exp) return NextResponse.json({ error: "Experiment not found." }, { status: 404 });
 
-  const design: PreregisteredDesign = {
-    hypothesis: exp.hypothesis ?? "", population: exp.population ?? "", geography: exp.geography ?? "",
-    providerType: exp.providerType ?? "", sampleTarget: exp.sampleTarget,
-    compensationBuckets: [1, 2, 3, 4, 5], detourBuckets: [0, 0.5, 1, 2, 3],
-    extraTimeBuckets: [0, 2, 5, 10], noticeBuckets: [0, 15, 60],
-    randomizationSeed: exp.randomizationSeed, primaryOutcome: exp.primaryOutcome,
-    secondaryOutcomes: [], analysisMethod: exp.analysisMethod ?? "", stoppingRule: exp.stoppingRule ?? "",
-    safetyRules: [], maxDetourKm: exp.maxDetourKm, maxExtraTimeMin: exp.maxExtraTimeMin,
-    minCompensation: exp.minCompensation, consentText: exp.consentText ?? "",
-    assumedUserSavings: exp.assumedUserSavings, assumedFailureCost: exp.assumedFailureCost,
-    assumedOryxxMargin: exp.assumedOryxxMargin,
-  };
-
+  // Load PERSISTED design (no fallback/hardcoded arrays)
+  const design = loadDesignStrict(exp.treatmentDesignJson);
   const cells = generateTreatmentCells(design);
   const responses = await db.providerResponse.findMany({ where: { experimentId } });
 

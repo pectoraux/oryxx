@@ -160,22 +160,35 @@ export async function POST(req: Request) {
   }
 
   // === VERIFY PROVIDER (admin) ===
+  // DEFECT 1 FIX: externally_verified CANNOT be created from a boolean.
+  // Only operator_verified can be produced by the current pilot.
+  // externally_verified requires a real external verification adapter that
+  // does not exist yet — so it is structurally impossible to create.
   if (mode === "verify_provider") {
     if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
     const enrollment = await db.experimentEnrollment.findUnique({ where: { id: body?.enrollmentId } });
     if (!enrollment) return NextResponse.json({ error: "Enrollment not found." }, { status: 404 });
-    const level = body?.external ? "externally_verified" : "operator_verified";
+
+    // Only operator_verified is possible. externally_verified is blocked.
+    if (body?.external === true || body?.level === "externally_verified") {
+      return NextResponse.json({
+        error: "externally_verified CANNOT be created via admin request. External credential verification adapter is not connected. Only operator_verified is possible in the current pilot.",
+      }, { status: 400 });
+    }
+
     await db.experimentEnrollment.update({
       where: { id: enrollment.id },
       data: {
-        providerVerified: level,
+        providerVerified: "operator_verified",
         providerType: body?.providerType ?? "taxi",
-        verificationMethod: body?.external ? "external_api" : "admin_manual",
+        verificationMethod: "admin_manual",
         verificationReference: body?.reference ?? null,
         verifiedAt: new Date(),
       },
     });
-    return NextResponse.json({ message: `Provider ${level}. Can now receive offers.` });
+    return NextResponse.json({
+      message: "Provider operator_verified. External credential verification NOT connected. Only operator_verified is possible in the current pilot.",
+    });
   }
 
   // === ENROLL — concurrency-safe via $transaction ===
@@ -201,24 +214,35 @@ export async function POST(req: Request) {
     const cells = generateTreatmentCells(design);
 
     // CONCURRENCY-SAFE: use $transaction to read counts + assign + insert atomically
-    const result = await db.$transaction(async (tx) => {
-      // count existing assignments per cell WITHIN the transaction
-      const enrollments = await tx.experimentEnrollment.findMany({
-        where: { experimentId, assignedCellId: { not: null } },
-        select: { assignedCellId: true },
-      });
-      const cellCounts = cells.map(c => enrollments.filter(e => e.assignedCellId === c.id).length);
-      const cell = assignTreatment(participantId, experimentId, exp.randomizationSeed, cells, cellCounts);
-
-      // insert enrollment (immutable assignment)
-      const enrollment = await tx.experimentEnrollment.create({
-        data: {
-          experimentId, participantId, accountEmail: email,
-          enrollmentToken, assignedCellId: cell.id, providerVerified: "unverified",
-        },
-      });
-      return { enrollment, cell };
-    }, { isolationLevel: "Serializable" });
+    // DEFECT 4 FIX: retry on serialization conflict with bounded backoff
+    let result: { enrollment: any; cell: any } | null = null;
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        result = await db.$transaction(async (tx) => {
+          const enrollments = await tx.experimentEnrollment.findMany({
+            where: { experimentId, assignedCellId: { not: null } },
+            select: { assignedCellId: true },
+          });
+          const cellCounts = cells.map(c => enrollments.filter(e => e.assignedCellId === c.id).length);
+          const cell = assignTreatment(participantId, experimentId, exp.randomizationSeed, cells, cellCounts);
+          const enrollment = await tx.experimentEnrollment.create({
+            data: {
+              experimentId, participantId, accountEmail: email,
+              enrollmentToken, assignedCellId: cell.id, providerVerified: "unverified",
+            },
+          });
+          return { enrollment, cell };
+        }, { isolationLevel: "Serializable" });
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        // Only retry on serialization conflicts (P2034 = transaction conflict)
+        if (err?.code !== "P2034") throw err;
+        await new Promise(r => setTimeout(r, 50 * Math.pow(2, attempt)));
+      }
+    }
+    if (!result) throw lastErr ?? new Error("Enrollment failed after retries.");
 
     return NextResponse.json({
       enrollment: result.enrollment, assignedCell: result.cell,
@@ -294,10 +318,12 @@ export async function POST(req: Request) {
       },
     });
 
-    // hash-chained event
-    const lastEvent = await db.experimentEvent.findFirst({ where: { offerId: response.id }, orderBy: { timestamp: "desc" } });
-    const event = createEvent(exp.id, response.id, enrollment.participantId, null, "OFFER_CREATED", "system", email ?? "system", lastEvent?.eventHash ?? null);
-    await db.experimentEvent.create({ data: event });
+    // hash-chained event — DEFECT 3 FIX: transactional append
+    await db.$transaction(async (tx) => {
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { offerId: response.id }, orderBy: { timestamp: "desc" } });
+      const event = createEvent(exp.id, response.id, enrollment.participantId, null, "OFFER_CREATED", "system", email ?? "system", lastEvent?.eventHash ?? null);
+      await tx.experimentEvent.create({ data: event });
+    }, { isolationLevel: "Serializable" });
 
     return NextResponse.json({ response, message: "RESEARCH STIMULUS created (NOT a marketplace booking)." });
   }
@@ -332,6 +358,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "W4-R requires admin verification. Participants cannot self-report TRIP_COMPLETED." }, { status: 403 });
     }
 
+    // DEFECT 2 FIX: completion evidence level cannot be client-chosen above "operator"
+    // Only "operator" is possible without real external verification infrastructure.
+    // gps/provider_api/system require evidence records that don't exist yet.
+    let completionLevel = "operator"; // default — the only level currently possible
+    if (newState === "TRIP_COMPLETED") {
+      const requestedLevel = body?.completionEvidenceLevel;
+      if (requestedLevel && requestedLevel !== "operator") {
+        return NextResponse.json({
+          error: `completionEvidenceLevel "${requestedLevel}" requires external evidence infrastructure (GPS/provider_api/system) that is not connected. Only "operator" is possible in the current pilot.`,
+        }, { status: 400 });
+      }
+    }
+
     const newTier = researchEvidenceForState(newState);
     const decision = newState === "PROVIDER_ACCEPTED" ? "accept" : newState === "PROVIDER_DECLINED" ? "decline" : newState === "PROVIDER_UNAVAILABLE" ? "not_available" : newState === "PROVIDER_IGNORED" ? "ignore" : response.decision;
 
@@ -348,10 +387,10 @@ export async function POST(req: Request) {
     if (newState === "TRIP_COMPLETED") {
       updateData.executed = true;
       updateData.completed = true;
-      updateData.externalVerificationMethod = body?.verificationMethod ?? "admin_verified";
+      updateData.externalVerificationMethod = "admin_verified";
       updateData.externalVerifiedBy = email;
       updateData.externalVerifiedAt = new Date().toISOString();
-      updateData.completionEvidenceLevel = body?.completionEvidenceLevel ?? "operator";
+      updateData.completionEvidenceLevel = completionLevel; // always "operator" in current pilot
     }
     if (newState === "TRIP_CANCELLED") { updateData.executed = false; updateData.executionFailureReason = body?.reason ?? "cancelled"; }
 
@@ -359,13 +398,16 @@ export async function POST(req: Request) {
     const updated = await db.providerResponse.updateMany({ where: { id: responseId, state: fromState }, data: updateData });
     if (updated.count === 0) return NextResponse.json({ error: "Race condition: state changed before transition." }, { status: 409 });
 
-    // hash-chained event
-    const lastEvent = await db.experimentEvent.findFirst({ where: { offerId: responseId }, orderBy: { timestamp: "desc" } });
-    const event = createEvent(enrollment.experimentId, responseId, enrollment.participantId, fromState, newState,
-      newState === "TRIP_COMPLETED" ? "admin" : "participant",
-      newState === "TRIP_COMPLETED" ? email ?? "admin" : enrollment.participantId,
-      lastEvent?.eventHash ?? null);
-    await db.experimentEvent.create({ data: event });
+    // hash-chained event — DEFECT 3 FIX: append inside a serializable transaction
+    // to prevent concurrent event writes from forking the chain
+    await db.$transaction(async (tx) => {
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { offerId: responseId }, orderBy: { timestamp: "desc" } });
+      const event = createEvent(enrollment.experimentId, responseId, enrollment.participantId, fromState, newState,
+        newState === "TRIP_COMPLETED" ? "admin" : "participant",
+        newState === "TRIP_COMPLETED" ? email ?? "admin" : enrollment.participantId,
+        lastEvent?.eventHash ?? null);
+      await tx.experimentEvent.create({ data: event });
+    }, { isolationLevel: "Serializable" });
 
     const w3rCreated = newState === "PROVIDER_ACCEPTED";
     const w4rCreated = newState === "TRIP_COMPLETED";
@@ -375,7 +417,7 @@ export async function POST(req: Request) {
       message: w3rCreated
         ? `W3-R recorded: verified provider accepted research stimulus. (NOT marketplace evidence.)`
         : w4rCreated
-        ? `W4-R recorded: completion verified by ${email} (level: ${body?.completionEvidenceLevel ?? "operator"}). (NOT marketplace evidence.)`
+        ? `W4-R recorded: completion verified by ${email} (level: ${completionLevel}). (NOT marketplace evidence.)`
         : `State: ${fromState} → ${newState}. Evidence: ${newTier}.`,
     });
   }
