@@ -111,7 +111,7 @@ function generateAcceptanceObservations(
       decision,
       executed: decision === "accept" ? executed : null,
       completed: executed ? completed : null,
-      tier: "W2",
+      tier: "W2a",
       source: FHV_SOURCE,
       timestamp: new Date().toISOString(),
     });
@@ -175,7 +175,7 @@ export function predictAcceptance(input: AcceptanceModelInput, model: any): Acce
   return {
     pAccept: Math.round(pAccept * 1000) / 1000,
     uncertainty: 0.3, // high uncertainty — W2 proxy, not W3
-    tier: "W2",
+    tier: "W2a",
     evidenceCount: model.evidenceCount || 0,
     basis: `P(accept) = sigmoid(${model.intercept} + ${model.compensationCoef}×$${input.compensation} − ${model.detourCoef}×${input.detourKm}km − ${model.extraTimeCoef}×${input.extraTimeMin}min). Based on W2 availability evidence, NOT W3 revealed acceptance.`,
   };
@@ -295,45 +295,49 @@ export function runWillingnessExperiment(config: WillingnessExperimentConfig): W
   const netEconomicValuePer1000 = Math.round((expectedUserSavingsPer1000 - expectedSupplierEarningsPer1000 - expectedExecutedPer1000 * 1) * 100) / 100;
 
   // evidence tier
-  const tierMeta = WILLINGNESS_TIERS.find((t) => t.tier === "W2")!;
+  const tierMeta = WILLINGNESS_TIERS.find((t) => t.tier === "W2a")!;
 
   const caveats = [
-    `Evidence tier: W2 (revealed availability). ${tierMeta.description}`,
-    `The W2 data (2032 FHV inter-trip gaps) proves drivers were AVAILABLE, not that they would ACCEPT a specific pooled request.`,
-    `The acceptance model is fit from availability proxy + behavioral assumptions (logistic shape). This is NOT W3 (revealed acceptance).`,
+    `Evidence tier: W2a (not-on-trip observation). ${tierMeta.description}`,
+    `The W2a data (2032 FHV inter-trip gaps) shows vehicles were NOT ON A TRIP — it does NOT prove drivers were available or willing. This is NOT "revealed willingness."`,
+    `The acceptance model is a SCENARIO ESTIMATE derived from W2a not-on-trip observations + behavioral assumptions (logistic shape). It is NOT observed acceptance (W3). The 18% acceptance figure is a modeled estimate, NOT a measured fact.`,
     `Break-even analysis shows the marketplace requires ~100% acceptance at $3 compensation — economically marginal.`,
-    `No W3 or W4 evidence exists. The marketplace thesis is NOT justified by current evidence.`,
+    `No W3 (revealed acceptance) or W4 (completed execution) evidence exists. The marketplace thesis is NOT justified by current evidence.`,
+    `W3 = 0. No public dataset contains real provider accept/reject decisions for pooled-trip offers. A field experiment is required to obtain W3 evidence.`,
   ];
 
   const biases = [
     "NYC FHV data overrepresents professional ride-hail drivers (Uber/Lyft), not private vehicles",
-    "Inter-trip gaps are a proxy for availability, not a direct acceptance measurement",
-    "The acceptance model's logistic shape is a behavioral assumption, not empirically validated",
+    "Inter-trip gaps are NOT-on-trip observations, NOT confirmed availability — driver may have been on break, refusing, or unavailable",
+    "The acceptance model's logistic shape is a behavioral assumption, NOT empirically validated (no W3 data)",
     "Execution rate (70%) and completion rate (85%) are assumed, not observed",
     "Sample is one city, one month — not generalizable",
   ];
 
   const whatIsAssumed = [
-    "P(accept | compensation, detour) — logistic model shape (behavioral assumption)",
-    "Execution rate = 70% (not observed)",
-    "Completion rate = 85% (not observed)",
-    "Driver willingness to pool passengers (the entire acceptance model is assumption-based)",
+    "P(accept | compensation, detour) — logistic model shape (behavioral assumption, NOT observed)",
+    "Execution rate = 70% (NOT observed)",
+    "Completion rate = 85% (NOT observed)",
+    "That not-on-trip intervals imply availability (they do NOT — driver may have been on break, refusing, or unavailable)",
+    "That drivers would accept pooled passengers (the ENTIRE acceptance model is assumption-based)",
   ];
 
   const whatIsObserved = [
-    "2032 inter-trip gaps showing drivers were available (W2)",
-    "Median availability gap: 8.6 minutes",
-    "66.8% of gaps > 5 minutes (extended searching/availability)",
+    "2032 inter-trip gaps showing vehicles were NOT ON A TRIP (W2a — NOT 'revealed willingness')",
+    "Median not-on-trip gap: 8.6 minutes",
+    "66.8% of gaps > 5 minutes",
+    "W3 (revealed acceptance) = 0 — no public dataset contains real provider accept/reject decisions",
+    "W4 (completed execution) = 0 — no completed pooled trips observed",
   ];
 
   return {
     config,
     pilot: {
-      name: "NYC FHV Willingness Evidence (W2)",
-      description: "Real NYC FHV (Uber/Lyft) inter-trip gap analysis providing W2-tier availability evidence. The acceptance model is fit from this availability proxy + behavioral assumptions.",
+      name: "NYC FHV Not-On-Trip Observations (W2a)",
+      description: "Real NYC FHV (Uber/Lyft) inter-trip gap analysis providing W2a-tier (not-on-trip) observations. These are NOT 'revealed willingness' — they only show a vehicle was not on a recorded trip. The acceptance model is a SCENARIO ESTIMATE from these observations + behavioral assumptions, NOT observed acceptance (W3).",
       datasets: [FHV_SOURCE],
     },
-    evidenceTier: "W2",
+    evidenceTier: "W2a",
     evidenceTierName: tierMeta.name,
     evidenceTierDescription: tierMeta.description,
     marketplaceSufficient: tierMeta.marketplaceSufficient,

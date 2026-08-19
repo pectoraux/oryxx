@@ -14,32 +14,34 @@ const DEFAULT_CONFIG: WillingnessExperimentConfig = {
 };
 
 describe("ORYXX willingness evidence layer", () => {
-  // === 1. Evidence tier is W2 (revealed availability) ===
-  test("evidence tier is W2 — not W3 or W4", () => {
+  // === 1. Evidence tier is W2a (not-on-trip observation) ===
+  test("evidence tier is W2a — not W3 or W4", () => {
     const r = runWillingnessExperiment(DEFAULT_CONFIG);
-    expect(r.evidenceTier).toBe("W2");
-    expect(r.marketplaceSufficient).toBe(false); // W2 is NOT sufficient
+    expect(r.evidenceTier).toBe("W2a");
+    expect(r.marketplaceSufficient).toBe(false); // W2a is NOT sufficient
   });
 
   // === 2. W0-W4 tiers are defined with correct metadata ===
-  test("WILLINGNESS_TIERS has 5 tiers with increasing strength", () => {
-    expect(WILLINGNESS_TIERS.length).toBe(5);
+  test("WILLINGNESS_TIERS has 6 tiers (W0, W1, W2a, W2b, W3, W4)", () => {
+    expect(WILLINGNESS_TIERS.length).toBe(6);
     expect(WILLINGNESS_TIERS[0].tier).toBe("W0");
-    expect(WILLINGNESS_TIERS[4].tier).toBe("W4");
-    // W3 and W4 are marketplace-sufficient; W0-W2 are not
-    expect(WILLINGNESS_TIERS[2].marketplaceSufficient).toBe(false); // W2
-    expect(WILLINGNESS_TIERS[3].marketplaceSufficient).toBe(true);  // W3
-    expect(WILLINGNESS_TIERS[4].marketplaceSufficient).toBe(true);  // W4
+    expect(WILLINGNESS_TIERS[2].tier).toBe("W2a");
+    expect(WILLINGNESS_TIERS[4].tier).toBe("W3");
+    expect(WILLINGNESS_TIERS[5].tier).toBe("W4");
+    // W3 and W4 are marketplace-sufficient; W0-W2b are not
+    expect(WILLINGNESS_TIERS[2].marketplaceSufficient).toBe(false); // W2a
+    expect(WILLINGNESS_TIERS[4].marketplaceSufficient).toBe(true);  // W3
+    expect(WILLINGNESS_TIERS[5].marketplaceSufficient).toBe(true);  // W4
   });
 
   // === 3. Real observations from NYC FHV data ===
-  test("observations are real (from NYC FHV gaps, not fixture)", () => {
+  test("observations are real (from NYC FHV gaps, not fixture) and labelled W2a", () => {
     const r = runWillingnessExperiment(DEFAULT_CONFIG);
     expect(r.totalObservations).toBeGreaterThan(1000); // 2032 real gaps
     // observations have pseudonymous provider IDs (no PII)
     for (const o of r.observations.slice(0, 20)) {
       expect(o.providerId).toMatch(/^P-/); // pseudonymous
-      expect(o.tier).toBe("W2");
+      expect(o.tier).toBe("W2a"); // NOT W3
       expect(o.source.isFixture).toBe(false); // REAL data
     }
   });
@@ -120,9 +122,9 @@ describe("ORYXX willingness evidence layer", () => {
   });
 
   // === 11. Caveats explicitly state the evidence is NOT W3 ===
-  test("caveats state that W2 is not W3 (not revealed acceptance)", () => {
+  test("caveats state that W2a is not W3 (not revealed acceptance)", () => {
     const r = runWillingnessExperiment(DEFAULT_CONFIG);
-    const hasNotW3 = r.caveats.some((c) => c.includes("NOT W3") || c.includes("not that they would ACCEPT") || c.includes("not revealed acceptance"));
+    const hasNotW3 = r.caveats.some((c) => c.includes("NOT W3") || c.includes("NOT observed acceptance") || c.includes("not revealed acceptance") || c.includes("W3 = 0"));
     expect(hasNotW3).toBe(true);
   });
 });

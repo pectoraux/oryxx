@@ -67,17 +67,22 @@ export function WillingnessLab() {
             <div>
               <p className="text-sm font-semibold leading-tight">Willingness Evidence Lab</p>
               <p className="text-[11px] text-muted-foreground leading-tight">
-                Attacks Tier D — does observed provider behavior justify the marketplace?
+                Has ORYXX crossed the gap from capacity to bookable supply?
               </p>
             </div>
           </div>
           <Button size="sm" onClick={run} disabled={loading} className="bg-emerald-600 hover:bg-emerald-700">
             {loading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Running…</>
-                   : <><Play className="mr-2 h-4 w-4" /> Run experiment</>}
+                   : <><Play className="mr-2 h-4 w-4" /> Run scenario analysis</>}
           </Button>
         </div>
         <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
           <SliderField label="Demands" value={numDemands} min={50} max={500} step={50} onChange={setNumDemands} />
+        </div>
+        <div className="border-t bg-amber-500/5 px-4 py-2">
+          <p className="text-[10px] text-amber-700 dark:text-amber-300">
+            <strong>SCENARIO ANALYSIS</strong> — The acceptance model below is a SCENARIO ESTIMATE from W2a (not-on-trip) observations + behavioral assumptions. It is NOT observed acceptance (W3). No public W3 dataset exists. A field experiment is instrumented to collect W3 evidence — see the field-experiment API at /api/oryxx/willingness/experiment.
+          </p>
         </div>
       </Card>
 
@@ -147,7 +152,7 @@ function EvidenceTierCard({ result }: { result: WillingnessExperimentResult }) {
         <p className={`text-[11px] font-medium ${result.marketplaceSufficient ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}`}>
           {result.marketplaceSufficient
             ? `Evidence tier ${result.evidenceTier} is SUFFICIENT to justify marketplace investment.`
-            : `Evidence tier ${result.evidenceTier} is NOT SUFFICIENT. The marketplace thesis requires W3 (revealed acceptance). Current evidence only shows availability (W2), not acceptance.`}
+            : `Evidence tier ${result.evidenceTier} (${result.evidenceTierName}) is NOT SUFFICIENT. The marketplace thesis requires W3 (revealed acceptance of a real offer). Current evidence is W2a (not-on-trip observation) — it does NOT prove drivers were available or willing.`}
         </p>
       </div>
     </Card>
@@ -215,7 +220,7 @@ function CurveCard({ title, icon: Icon, data, xKey, xLabel }: { title: string; i
             <Line type="monotone" dataKey="ciHigh" stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" name="CI high" />
           </LineChart>
         </ResponsiveContainer>
-        <p className="mt-1 text-[9px] text-muted-foreground">W2 evidence — availability proxy, NOT revealed acceptance</p>
+        <p className="mt-1 text-[9px] text-rose-500 font-medium">⚠ SCENARIO MODEL — NOT OBSERVED. W2a not-on-trip proxy, NOT W3 revealed acceptance.</p>
       </div>
     </Card>
   );

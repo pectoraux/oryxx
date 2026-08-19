@@ -38,3 +38,55 @@ model Waitlist {
 
   @@index([status])
 }
+
+// Willingness field-experiment: stores real provider responses to pooled-trip
+// offers. This produces W3 (revealed acceptance) and W4 (completed execution)
+// evidence — the critical gap in the ORYXX thesis. Provider identity is
+// pseudonymous (no PII).
+model AcceptanceExperiment {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  status      String   @default("designed") // designed | recruiting | active | completed | not_deployable
+  maxDetourKm Float    @default(5.0)
+  minCompensation Float @default(1.0)
+  requiresConsent Boolean @default(true)
+  consentText String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  responses   ProviderResponse[]
+
+  @@index([status])
+}
+
+model ProviderResponse {
+  id              String   @id @default(cuid())
+  experimentId    String
+  experiment      AcceptanceExperiment @relation(fields: [experimentId], references: [id])
+  // pseudonymous provider ID (no PII)
+  providerId      String
+  // the offer presented
+  compensation    Float
+  detourKm        Float
+  extraTimeMin    Float
+  advanceNoticeMin Float
+  passengerCount  Int      @default(1)
+  tripDistanceKm   Float
+  originName      String
+  destName        String
+  hourOfDay       Int
+  // decision
+  decision        String   // accept | decline | not_available | not_eligible | ignore
+  // execution (if accepted)
+  executed        Boolean?
+  completed        Boolean?
+  executionFailureReason String?
+  // evidence tier
+  evidenceTier    String   // W3 if accepted, W4 if completed
+  consentObtained Boolean  @default(false)
+  timestamp       DateTime @default(now())
+
+  @@index([experimentId])
+  @@index([providerId])
+  @@index([decision])
+}
