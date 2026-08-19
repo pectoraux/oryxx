@@ -82,7 +82,7 @@ export function ExperimentLab() {
     }
   };
 
-  const strategyIds = result?.config.strategies ?? ["ordinary", "centralized", "oryxx", "clairvoyant"];
+  const strategyIds = result?.config.strategies ?? ["ordinary", "multimodal", "pooling-fixed", "centralized", "oryxx", "clairvoyant"];
 
   return (
     <div className="space-y-6">
@@ -96,7 +96,7 @@ export function ExperimentLab() {
             <div>
               <p className="text-sm font-semibold leading-tight">Experiment Lab</p>
               <p className="text-[11px] text-muted-foreground leading-tight">
-                Multi-seed · 4 strategies · canonical welfare · falsifiable
+                Multi-seed · 6 strategies · advantage decomposition · falsifiable
               </p>
             </div>
           </div>
@@ -146,6 +146,12 @@ export function ExperimentLab() {
           {/* Invariant status */}
           <InvariantBanner result={result} />
 
+          {/* ORYXX Moments — the clean thesis metric */}
+          <OryxMomentsBanner result={result} />
+
+          {/* Advantage decomposition ladder */}
+          <DecompositionLadder result={result} />
+
           {/* Headline paired diffs */}
           <HeadlinePairedDiffs result={result} />
 
@@ -191,6 +197,94 @@ function InvariantBanner({ result }: { result: ExperimentResult }) {
         <Badge variant="outline" className={allPassed ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : "border-rose-500/40 text-rose-700 dark:text-rose-300"}>
           {allPassed ? "FAIR" : "VIOLATED"}
         </Badge>
+      </div>
+    </Card>
+  );
+}
+
+function OryxMomentsBanner({ result }: { result: ExperimentResult }) {
+  const m = result.oryxxMomentsStats;
+  return (
+    <Card className="overflow-hidden py-0">
+      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500" />
+      <div className="grid grid-cols-1 sm:grid-cols-3">
+        <div className="border-b border-r p-4 sm:border-r sm:border-b-0">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">ORYXX moments per seed</span>
+          </div>
+          <p className="mt-1 text-3xl font-bold tabular-nums text-emerald-600">{m.mean.toFixed(1)}</p>
+          <p className="text-[11px] text-muted-foreground">median {m.median} · p10–p90: {m.p10}–{m.p90}</p>
+        </div>
+        <div className="border-b border-r p-4 sm:border-b-0">
+          <div className="flex items-center gap-1.5">
+            <Activity className="h-3.5 w-3.5 text-emerald-600" />
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Total opportunities discovered</span>
+          </div>
+          <p className="mt-1 text-3xl font-bold tabular-nums text-emerald-600">{m.totalAcrossSeeds}</p>
+          <p className="text-[11px] text-muted-foreground">across {result.runs.length} seeds</p>
+        </div>
+        <div className="p-4">
+          <div className="flex items-center gap-1.5">
+            <Info className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">What this means</span>
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            Feasible (demand, supply) matches using transit, carpool NPDs, or truck backhauls —
+            invisible to ordinary routing. This is the clean thesis test:
+            <strong className="text-foreground"> does ORYXX discover opportunities incumbents cannot see?</strong>
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function DecompositionLadder({ result }: { result: ExperimentResult }) {
+  if (!result.decomposition || result.decomposition.length === 0) return null;
+  return (
+    <Card className="py-0">
+      <div className="border-b bg-muted/30 px-4 py-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold">Advantage decomposition — what actually creates the value?</span>
+          <Badge variant="outline" className="text-[10px]">A → B → C → D → E → F</Badge>
+        </div>
+        <p className="mt-0.5 text-[11px] text-muted-foreground">
+          Each row isolates one mechanism's marginal contribution to risk-adjusted welfare. Mean Δ and win rate across {result.runs.length} seeds.
+        </p>
+      </div>
+      <div className="divide-y">
+        {result.decomposition.map((d) => {
+          const isPositive = d.mean > 0.5;
+          const isZero = Math.abs(d.mean) < 0.5;
+          const tone = isZero ? "amber" : isPositive ? "emerald" : "rose";
+          const color = tone === "emerald" ? "text-emerald-600" : tone === "rose" ? "text-rose-600" : "text-amber-600";
+          const bgColor = tone === "emerald" ? "bg-emerald-500/5" : tone === "rose" ? "bg-rose-500/5" : "bg-amber-500/5";
+          return (
+            <div key={d.comparison} className={`flex items-center gap-3 px-4 py-3 ${bgColor}`}>
+              <div className="w-16 shrink-0">
+                <Badge variant="outline" className="font-mono text-[11px]">{d.comparison}</Badge>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium">{d.label}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  win rate {(d.winRate * 100).toFixed(0)}% · p10–p90: {d.p10.toFixed(1)} to {d.p90.toFixed(1)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className={`text-lg font-bold tabular-nums ${color}`}>
+                  {d.mean > 0 ? "+" : ""}{d.mean.toFixed(1)}
+                </p>
+                {isZero && (
+                  <p className="text-[10px] text-amber-600">≈ zero</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="border-t bg-muted/20 px-4 py-2 text-[10px] leading-relaxed text-muted-foreground">
+        <strong className="text-foreground">How to read this:</strong> B−A measures the value of multimodal routing (seeing transit/carpool/truck but not sharing). C−B measures physical coordination (sharing capacity). D−C measures negotiated pricing. E−D measures ORYXX's market mechanism. F−E is the optimization gap. If a row is ≈ zero, that mechanism adds no measurable value in this regime.
       </div>
     </Card>
   );

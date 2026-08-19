@@ -75,6 +75,12 @@ export function buildMetrics(
     : 0;
   const unservedDemandValue = r2(unmatched.reduce((a, d) => a + d.value, 0));
 
+  // ORYXX moments: matches using supply that ordinary routing cannot see
+  // (any non-RSM supply). RSM-* are the rideshare-market fallback that
+  // ordinary routing also has access to, so they don't count as "invisible
+  // opportunities". Transit/carpool/truck matches are the real discoveries.
+  const oryxxMomentsCount = matches.filter((m) => !m.supplyId.startsWith("RSM-")).length;
+
   return {
     strategyId,
     matchedDemands: matchedDemands.length,
@@ -98,6 +104,7 @@ export function buildMetrics(
     pairCount: demands.length * supplies.length,
     feasiblePairCount,
     isExact,
+    oryxxMomentsCount,
     evaluations: matches,
   };
 }

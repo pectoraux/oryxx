@@ -109,7 +109,13 @@ export interface TransportationOpportunity {
 }
 
 // --- Strategy identifiers ---------------------------------------------------
-export type StrategyId = "ordinary" | "centralized" | "oryxx" | "clairvoyant";
+export type StrategyId =
+  | "ordinary"
+  | "multimodal"
+  | "pooling-fixed"
+  | "centralized"
+  | "oryxx"
+  | "clairvoyant";
 
 export interface StrategySpec {
   id: StrategyId;
@@ -120,57 +126,96 @@ export interface StrategySpec {
   seesLatentSupply: boolean;
   seesAllDemand: boolean;
   usesMarketPricing: boolean;
+  allowsCrossDemandSharing: boolean;
   color: string;
+  // decomposition ladder position (A=0, B=1, ...). Lower = fewer capabilities.
+  ladder: number;
 }
 
 export const STRATEGIES: StrategySpec[] = [
   {
     id: "ordinary",
-    name: "Ordinary routing",
-    shortName: "Ordinary",
+    name: "A — Ordinary routing",
+    shortName: "Ordinary (A)",
     description:
-      "Each demand independently calls a direct on-demand rideshare at market rate. No cross-demand coordination, no latent-supply discovery, no market clearing. Competent at its own task but structurally blind to opportunities.",
+      "Each demand independently calls a direct on-demand rideshare at market rate. No cross-demand coordination, no latent-supply discovery, no multimodal awareness. Competent but structurally blind to opportunities.",
     kind: "BASELINE",
     seesLatentSupply: false,
     seesAllDemand: false,
-    usesMarketPricing: false,
+    usesMarketPricing: true,
+    allowsCrossDemandSharing: false,
     color: "#f59e0b",
+    ladder: 0,
   },
   {
-    id: "centralized",
-    name: "Centralized coordination",
-    shortName: "Centralized",
+    id: "multimodal",
+    name: "B — Multimodal planner",
+    shortName: "Multimodal (B)",
     description:
-      "All demand and supply are visible to a central optimizer that matches trips and capacity to maximize welfare. No autonomous negotiation or market mechanism — just a benevolent dispatcher. Measures the value of coordination itself.",
+      "Each demand independently picks the best feasible supply from ALL modes (rideshare, transit, carpool, truck). NO cross-demand sharing — each non-transit supply serves at most one demand. Isolates the value of multimodal routing.",
     kind: "HEURISTIC",
     seesLatentSupply: true,
-    seesAllDemand: true,
-    usesMarketPricing: false,
-    color: "#0ea5e9",
+    seesAllDemand: false,
+    usesMarketPricing: true,
+    allowsCrossDemandSharing: false,
+    color: "#06b6d4",
+    ladder: 1,
   },
   {
-    id: "oryxx",
-    name: "ORYXX market",
-    shortName: "ORYXX",
+    id: "pooling-fixed",
+    name: "C — Pooling (fixed price)",
+    shortName: "Pooling (C)",
     description:
-      "Cross-demand matching + latent supply + capacity + time + risk-adjusted pricing + execution probability. Welfare-greedy construction with bounded 2-opt local improvement. Subsumes ordinary routing (rideshare fallback) but discovers latent-supply opportunities.",
+      "Cross-demand capacity sharing IS allowed, but at fixed market prices (no negotiation). Isolates the value of physical coordination without economic optimization.",
     kind: "HEURISTIC",
     seesLatentSupply: true,
     seesAllDemand: true,
     usesMarketPricing: true,
+    allowsCrossDemandSharing: true,
+    color: "#8b5cf6",
+    ladder: 2,
+  },
+  {
+    id: "centralized",
+    name: "D — Centralized coordination",
+    shortName: "Centralized (D)",
+    description:
+      "All demand and supply visible. Welfare-maximizing assignment with negotiated pricing (deterministic 50/50 split). Isolates the value of economic optimization on top of physical coordination.",
+    kind: "HEURISTIC",
+    seesLatentSupply: true,
+    seesAllDemand: true,
+    usesMarketPricing: false,
+    allowsCrossDemandSharing: true,
+    color: "#0ea5e9",
+    ladder: 3,
+  },
+  {
+    id: "oryxx",
+    name: "E — ORYXX market",
+    shortName: "ORYXX (E)",
+    description:
+      "Cross-demand matching + latent supply + capacity + time + ORYXX market pricing (user-biased split). Isolates the value of the market mechanism specifically.",
+    kind: "HEURISTIC",
+    seesLatentSupply: true,
+    seesAllDemand: true,
+    usesMarketPricing: false,
+    allowsCrossDemandSharing: true,
     color: "#10b981",
+    ladder: 4,
   },
   {
     id: "clairvoyant",
-    name: "Clairvoyant optimum",
-    shortName: "Clairvoyant",
+    name: "F — Clairvoyant optimum",
+    shortName: "Clairvoyant (F)",
     description:
-      "Exact branch-and-bound solver with perfect knowledge of the simulated world. Maximizes total risk-adjusted social welfare subject to identical constraints. An upper-bound reference — measures the heuristic gap of ORYXX and centralized.",
+      "Exact branch-and-bound with perfect knowledge. Upper-bound reference — measures the optimization gap of all heuristics.",
     kind: "EXACT",
     seesLatentSupply: true,
     seesAllDemand: true,
     usesMarketPricing: false,
-    color: "#8b5cf6",
+    allowsCrossDemandSharing: true,
+    color: "#ec4899",
+    ladder: 5,
   },
 ];
 
@@ -202,6 +247,10 @@ export interface CanonicalMetrics {
   pairCount: number; // feasible pairs enumerated
   feasiblePairCount: number;
   isExact: boolean;
+  // ORYXX moments: matches using supply that ordinary routing cannot see
+  // (non-rideshare-market supply). This is the clean thesis metric:
+  // "how many valuable opportunities are invisible to ordinary routing?"
+  oryxxMomentsCount: number;
   // provenance
   evaluations: TransportationEvaluation[];
 }
@@ -270,6 +319,42 @@ export interface Regime {
   description: string;
   config: Partial<ExperimentConfig>;
   world: Partial<WorldConfig>;
+}
+
+// --- Advantage decomposition ------------------------------------------------
+// The ladder A→B→C→D→E→F isolates each mechanism's marginal contribution.
+// Each delta = (higher strategy welfare) − (lower strategy welfare), per seed.
+export interface DecompositionDelta {
+  comparison: string; // "B - A" etc.
+  label: string; // "Value of multimodal routing"
+  metric: string;
+  mean: number;
+  median: number;
+  p10: number;
+  p90: number;
+  winRate: number; // fraction of seeds where the delta is positive
+  n: number;
+}
+
+export interface SuperlinearityPoint {
+  dimension: string; // "future-visibility" | "supply-density" | "demand-density" | "npd-density"
+  value: number;
+  oryxxWelfare: number; // mean ORYXX welfare at this point
+  ordinaryWelfare: number; // mean ordinary welfare
+  oryxxAdvantage: number; // oryxxWelfare - ordinaryWelfare
+  oryxxMoments: number; // mean ORYXX moments count
+  n: number;
+}
+
+export interface SuperlinearityResult {
+  dimension: string;
+  points: SuperlinearityPoint[];
+  // if the advantage curve is superlinear, isSuperlinear = true
+  isSuperlinear: boolean;
+  // R² of a quadratic fit to the advantage curve (R² > 0.9 with positive quadratic coefficient = superlinear)
+  quadraticR2: number;
+  quadraticCoef: number; // sign of the quadratic term
+  note: string;
 }
 
 // --- Paired comparison ------------------------------------------------------

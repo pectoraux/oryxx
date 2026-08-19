@@ -114,7 +114,7 @@ export function regimeToConfig(regime: Regime, seed: number, numSeeds: number): 
     regionKm: 22,
     exactMaxDemands: 16,
     world,
-    strategies: ["ordinary", "centralized", "oryxx", "clairvoyant"],
+    strategies: ["ordinary", "multimodal", "pooling-fixed", "centralized", "oryxx", "clairvoyant"],
     numDemands: regime.config.numDemands ?? 300,
     numDrivers: regime.config.numDrivers ?? 60,
     numNPDs: regime.config.numNPDs ?? 40,

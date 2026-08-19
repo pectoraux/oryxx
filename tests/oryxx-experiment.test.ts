@@ -453,7 +453,7 @@ describe("ORYXX experiment invariants", () => {
       expect(cfg.exactMaxDemands).toBeGreaterThan(0);
       expect(cfg.numSeeds).toBe(3);
       expect(Number.isFinite(cfg.seed)).toBe(true);
-      expect(cfg.strategies).toHaveLength(4);
+      expect(cfg.strategies).toHaveLength(6);
       expect(cfg.strategies).toContain("clairvoyant");
       // world has no NaN/Infinity — only the numeric fields (WorldConfig
       // also contains booleans which we check explicitly below).
