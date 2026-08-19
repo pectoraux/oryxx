@@ -385,3 +385,27 @@ HONEST CONCLUSION:
 - W3/W4 evidence remains ZERO.
 - The pilot is research-ready but NOT deployed.
 - The marketplace thesis verdict: NOT_TESTED.
+
+---
+Task ID: codebase-freeze
+Agent: orchestrator (principal)
+Task: Correct the W2b classification error and freeze the codebase.
+
+Work Log:
+- Corrected evidenceTierForState: PROVIDER_UNAVAILABLE → W0 (not W2b). "Not available" is evidence of the OPPOSITE of availability. W2b requires a positive confirmed-availability signal.
+- All 88 tests pass. Lint clean. Pushed.
+
+Codebase frozen.
+
+The next step is operational, not architectural: run the preregistered pilot with real providers under an approved protocol. The first success criterion is not positive economics — it is: "Can we obtain clean W3 and W4 observations without compromising safety, privacy, or experimental integrity?"
+
+Final evidence state:
+  A   observed movement                 ✓ (NYC TLC + FHV real data)
+  B   observed low occupancy            ✓ (passenger_count observed)
+  C   inferred capacity                 ✓ (modeled from B)
+  W2a not-on-trip observation          ✓ (2032 FHV inter-trip gaps)
+  W2b confirmed availability            ✗ (requires positive signal, not yet measured)
+  W3  accepted real offer                ✗ (pilot instrumented, NOT deployed)
+  W4  completed real offer               ✗ (requires W3 first)
+
+Marketplace verdict: NOT_TESTED.
