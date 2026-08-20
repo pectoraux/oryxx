@@ -517,7 +517,13 @@ export async function POST(req: Request) {
     // Pre-transaction reads (for early rejection — not authoritative)
     const enrollment = await db.experimentEnrollment.findUnique({ where: { enrollmentToken }, include: { experiment: true } });
     if (!enrollment) return NextResponse.json({ error: "Invalid token." }, { status: 404 });
-    if (enrollment.accountEmail !== email) return NextResponse.json({ error: "CROSS-USER." }, { status: 403 });
+    // Cross-user check: the participant owns the transition, EXCEPT for
+    // TRIP_COMPLETED which requires admin verification (W4-R). The admin
+    // is the verifier, not the participant — so admin role bypasses the
+    // email match for completion only. This is the ONLY admin override.
+    if (enrollment.accountEmail !== email && !(newState === "TRIP_COMPLETED" && role === "admin")) {
+      return NextResponse.json({ error: "CROSS-USER." }, { status: 403 });
+    }
     const response = await db.providerResponse.findUnique({ where: { id: responseId } });
     if (!response) return NextResponse.json({ error: "Response not found." }, { status: 404 });
     if (response.enrollmentId !== enrollment.id) return NextResponse.json({ error: "CROSS-USER: response belongs to different enrollment." }, { status: 403 });
