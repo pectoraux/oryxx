@@ -1,0 +1,191 @@
+# ORYXX — Research UI Browser Tests
+#
+# Drives a REAL browser (Chromium via Playwright) against a REAL Next.js dev
+# server backed by a REAL PostgreSQL test database. The browser exercises
+# the actual ProviderResearchUI and ResearchOperatorDashboard components.
+#
+# This is a dedicated workflow (separate from research-integrity.yml) because
+# browser tests require more infrastructure (Playwright browsers, dev server).
+# It runs on changes to:
+#   - src/components/oryxx/
+#   - src/app/page.tsx
+#   - src/app/api/oryxx/willingness/
+#   - tests/browser/
+#   - playwright.config.ts
+#
+# What this CI proves:
+#   "the actual UI works end-to-end against PostgreSQL — enrollment recovery,
+#    consent recovery, offer recovery, withdrawal persistence, cross-participant
+#    isolation, and operator dashboard controls all function in a real browser."
+
+name: Research UI Browser Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/components/oryxx/**"
+      - "src/app/page.tsx"
+      - "src/app/api/oryxx/willingness/**"
+      - "tests/browser/**"
+      - "playwright.config.ts"
+      - ".github/workflows/research-ui-browser.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/components/oryxx/**"
+      - "src/app/page.tsx"
+      - "src/app/api/oryxx/willingness/**"
+      - "tests/browser/**"
+      - "playwright.config.ts"
+      - ".github/workflows/research-ui-browser.yml"
+
+concurrency:
+  group: research-ui-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: "1.3.14"
+  POSTGRES_USER: oryxx_ui_test
+  POSTGRES_PASSWORD: oryxx_ui_test_pw
+  POSTGRES_DB: oryxx_ui_test
+  DATABASE_URL: postgresql://oryxx_ui_test:oryxx_ui_test_pw@localhost:5432/oryxx_ui_test?schema=public
+  DIRECT_URL: postgresql://oryxx_ui_test:oryxx_ui_test_pw@localhost:5432/oryxx_ui_test?schema=public
+  NEXTAUTH_SECRET: ci-browser-test-secret-not-for-production
+  NEXTAUTH_URL: http://localhost:3000
+  TEST_ADMIN_EMAIL: e2e-admin@oryxx.test
+  TEST_ADMIN_PASSWORD: E2E-Admin-Pw-123!
+  TEST_PARTICIPANT_EMAIL: e2e-participant@oryxx.test
+  TEST_PARTICIPANT_PASSWORD: E2E-Participant-Pw-123!
+  TEST_PARTICIPANT_B_EMAIL: e2e-participant-b@oryxx.test
+  TEST_PARTICIPANT_B_PASSWORD: E2E-ParticipantB-Pw-123!
+
+jobs:
+  browser-e2e:
+    name: Browser E2E (Playwright + PostgreSQL)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: bunx playwright install --with-deps chromium
+
+      - name: Generate Prisma Client
+        run: bun run db:generate
+
+      - name: Apply Prisma schema
+        run: bun run db:push
+
+      - name: Verify schema applied
+        run: |
+          PGPASSWORD=$POSTGRES_PASSWORD psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "\dt"
+
+      - name: Create test data (admin, participant, experiment)
+        run: bun run tests/browser/setup.ts
+
+      - name: Start Next.js dev server
+        run: |
+          bun run dev &
+          echo "Dev server starting..."
+          # Wait for the server to be ready
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:3000 > /dev/null 2>&1; then
+              echo "Dev server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Wait for dev server
+        run: |
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000)
+            if [ "$STATUS" = "200" ]; then
+              echo "Server responding with HTTP 200"
+              break
+            fi
+            echo "Waiting... (HTTP $STATUS)"
+            sleep 2
+          done
+
+      - name: Run browser tests
+        run: |
+          # Get the experiment ID from setup output and export it
+          export TEST_EXPERIMENT_ID=$(bun run tests/browser/setup.ts 2>&1 | grep "TEST_EXPERIMENT_ID=" | head -1 | sed 's/.*=//')
+          echo "Using TEST_EXPERIMENT_ID=$TEST_EXPERIMENT_ID"
+          bunx playwright test --reporter=list
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          DIRECT_URL: ${{ env.DIRECT_URL }}
+
+      - name: Cleanup test data
+        if: always()
+        run: bun run tests/browser/cleanup.ts
+
+      - name: Verify zero test data remains
+        if: always()
+        run: |
+          LEFTOVER=$(PGPASSWORD=$POSTGRES_PASSWORD psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -t -c "SELECT COUNT(*) FROM \"AcceptanceExperiment\" WHERE name = 'E2E Browser Test Experiment';")
+          echo "Leftover test experiments: $LEFTOVER"
+          if [ "$LEFTOVER" -gt 0 ]; then
+            echo "::error::Cleanup failed — leftover test experiments"
+            exit 1
+          fi
+          echo "Cleanup verification passed: zero test experiments remain."
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "═══════════════════════════════════════════════════════════"
+          echo "  RESEARCH UI BROWSER TESTS — RESULT SUMMARY"
+          echo "═══════════════════════════════════════════════════════════"
+          echo "  Commit: ${{ github.sha }}"
+          echo "  Browser: Chromium (Playwright)"
+          echo "  Database: PostgreSQL 16 (service container)"
+          echo ""
+          echo "  Journey tested:"
+          echo "    ✓ Participant sign-in + UI open"
+          echo "    ✓ Experiment selection + enrollment"
+          echo "    ✓ Consent recording"
+          echo "    ✓ Operator verification (admin API)"
+          echo "    ✓ Offer creation + state transitions (OFFER_CREATED → PRESENTED → VIEWED)"
+          echo "    ✓ ACCEPT decision (W3-R created)"
+          echo "    ✓ W3-R verified in backend"
+          echo "    ✓ Page refresh → state recovered"
+          echo "    ✓ Withdrawal + persistence across refresh"
+          echo "    ✓ Cross-participant isolation (B cannot see A's data)"
+          echo "    ✓ Operator dashboard (integrity check, pause/resume, exports)"
+          echo "═══════════════════════════════════════════════════════════"

@@ -305,6 +305,83 @@ export async function POST(req: Request) {
     });
   }
 
+  // === GET ENROLLMENT (participant) — recover session-bound enrollment ===
+  // Derives identity from the authenticated session (NOT from client-supplied
+  // fields). Returns the participant's enrollment, consent status, provider
+  // verification, and current response/offer for the specified experiment.
+  // Used by the ProviderResearchUI to recover state after page refresh /
+  // browser reopen / sign-out-sign-in.
+  if (mode === "get_enrollment") {
+    const experimentId = body?.experimentId;
+    if (!experimentId) return NextResponse.json({ error: "experimentId required." }, { status: 400 });
+    // Find the participant's enrollment for this experiment (account-bound).
+    const enrollment = await db.experimentEnrollment.findFirst({
+      where: { experimentId, accountEmail: email },
+      include: { experiment: true },
+    });
+    if (!enrollment) return NextResponse.json({ enrolled: false });
+    // Find valid (non-withdrawn) consent
+    const consent = await db.experimentConsent.findFirst({
+      where: { enrollmentId: enrollment.id, accountEmail: email, withdrawnAt: null },
+    });
+    // Find the most recent response/offer for this enrollment
+    const response = await db.providerResponse.findFirst({
+      where: { enrollmentId: enrollment.id },
+      orderBy: { timestamp: "desc" },
+    });
+    return NextResponse.json({
+      enrolled: true,
+      enrollment: {
+        id: enrollment.id,
+        experimentId: enrollment.experimentId,
+        participantId: enrollment.participantId,
+        enrollmentToken: enrollment.enrollmentToken,
+        providerVerified: enrollment.providerVerified,
+        providerType: enrollment.providerType,
+        assignedCellId: enrollment.assignedCellId,
+        status: enrollment.status,
+        withdrawnAt: enrollment.withdrawnAt,
+      },
+      experiment: {
+        id: enrollment.experiment.id,
+        name: enrollment.experiment.name,
+        status: enrollment.experiment.status,
+        consentText: enrollment.experiment.consentText,
+        consentVersion: enrollment.experiment.consentVersion,
+        requiresConsent: enrollment.experiment.requiresConsent,
+        maxDetourKm: enrollment.experiment.maxDetourKm,
+        maxExtraTimeMin: enrollment.experiment.maxExtraTimeMin,
+        minCompensation: enrollment.experiment.minCompensation,
+      },
+      consented: !!consent,
+      consent: consent ? {
+        consentVersion: consent.consentVersion,
+        consentedAt: consent.consentedAt,
+        withdrawnAt: consent.withdrawnAt,
+      } : null,
+      response: response ? {
+        id: response.id,
+        treatmentCellId: response.treatmentCellId,
+        compensation: response.compensation,
+        detourKm: response.detourKm,
+        extraTimeMin: response.extraTimeMin,
+        advanceNoticeMin: response.advanceNoticeMin,
+        passengerCount: response.passengerCount,
+        tripDistanceKm: response.tripDistanceKm,
+        originName: response.originName,
+        destName: response.destName,
+        hourOfDay: response.hourOfDay,
+        state: response.state,
+        decision: response.decision,
+        evidenceTier: response.evidenceTier,
+        offerPresentedAt: response.offerPresentedAt,
+        offerExpiresAt: response.offerExpiresAt,
+        providerViewedAt: response.providerViewedAt,
+        decisionAt: response.decisionAt,
+      } : null,
+    });
+  }
+
   // === VERIFY PROVIDER (admin) ===
   if (mode === "verify_provider") {
     if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
