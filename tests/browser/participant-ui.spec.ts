@@ -36,7 +36,7 @@
 //   - A test admin + test participant account created via Prisma seed
 //   - A test experiment created, preregistered, and activated
 
-import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
+import { test, expect, type Page, type Browser } from "@playwright/test";
 
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "e2e-admin@oryxx.test";
 const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || "E2E-Admin-Pw-123!";
@@ -104,32 +104,16 @@ async function waitForRecovery(page: Page) {
   ).first().waitFor({ state: "visible", timeout: 15000 });
 }
 
-// Create a standalone API context authenticated as admin.
+// Create a standalone admin browser context and make an API call.
 // Used for admin-only API calls (verify_provider, pause, etc.) that
 // cannot use the participant's browser session.
-async function createAdminContext(): Promise<APIRequestContext> {
-  const ctx = await test.request.newContext();
-  // Get CSRF token
-  const csrfRes = await ctx.get("/api/auth/csrf");
-  const csrf = (await csrfRes.json()).csrfToken;
-  // Sign in as admin
-  await ctx.post("/api/auth/callback/credentials", {
-    multipart: {
-      email: ADMIN_EMAIL,
-      password: ADMIN_PASSWORD,
-      csrfToken: csrf,
-      redirect: "false",
-      json: "true",
-    },
-  });
-  return ctx;
-}
-
-// Make an admin-only API call with a standalone authenticated context.
-async function adminApiCall(body: any): Promise<{ status: number; body: any }> {
-  const ctx = await createAdminContext();
+async function adminApiCall(page: Page, body: any): Promise<{ status: number; body: any }> {
+  const browser = page.context().browser()!;
+  const adminContext = await browser.newContext();
+  const adminPage = await adminContext.newPage();
   try {
-    const res = await ctx.post("/api/oryxx/willingness/experiment", {
+    await signIn(adminPage, ADMIN_EMAIL, ADMIN_PASSWORD);
+    const res = await adminPage.request.post("/api/oryxx/willingness/experiment", {
       headers: { "Content-Type": "application/json" },
       data: body,
     });
@@ -137,7 +121,7 @@ async function adminApiCall(body: any): Promise<{ status: number; body: any }> {
     try { parsed = await res.json(); } catch { parsed = null; }
     return { status: res.status(), body: parsed };
   } finally {
-    await ctx.dispose();
+    await adminContext.close();
   }
 }
 
@@ -203,7 +187,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     // Admin verifies the provider (uses standalone admin context, not
     // the participant's browser session, because verify_provider requires
     // admin role).
-    const verifyRes = await adminApiCall({ mode: "verify_provider", enrollmentId, providerType: "taxi", reference: "browser-e2e" });
+    const verifyRes = await adminApiCall(page, { mode: "verify_provider", enrollmentId, providerType: "taxi", reference: "browser-e2e" });
     expect(verifyRes.status).toBe(200);
   });
 
