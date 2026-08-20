@@ -83,12 +83,13 @@ async function signIn(page: Page, email: string, password: string) {
 
 async function openParticipantView(page: Page) {
   await page.goto("/");
-  await page.waitForTimeout(1500);
+  await page.waitForLoadState("networkidle");
+  await page.waitForTimeout(500);
   // Click the "Research Participant" tab
   const participantTab = page.locator("button:has-text('Research Participant')");
   await participantTab.waitFor({ state: "visible", timeout: 10000 });
   await participantTab.click();
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(500);
 }
 
 test.describe("Provider Participant UI — Browser E2E", () => {
@@ -117,7 +118,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     await expect(page.locator("[data-testid='consent-section']")).toBeVisible({ timeout: 10000 });
   });
 
-  test("Step 7-9: Participant consents, operator verifies", async ({ page, request }) => {
+  test("Step 7-9: Participant consents, operator verifies", async ({ page }) => {
     await signIn(page, PARTICIPANT_EMAIL, PARTICIPANT_PASSWORD);
     await openParticipantView(page);
 
@@ -141,7 +142,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Operator verifies participant via API (admin action — not a UI step for the participant)
     // Get the participant's enrollment ID
-    const enrollRes = await request.post("/api/oryxx/willingness/experiment", {
+    const enrollRes = await page.request.post("/api/oryxx/willingness/experiment", {
       headers: { "Content-Type": "application/json" },
       data: { mode: "get_enrollment", experimentId: EXPERIMENT_ID },
     });
@@ -151,7 +152,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     const enrollmentId = enrollData.enrollment.id;
 
     // Admin verifies the provider
-    const verifyRes = await request.post("/api/oryxx/willingness/experiment", {
+    const verifyRes = await page.request.post("/api/oryxx/willingness/experiment", {
       headers: { "Content-Type": "application/json" },
       data: { mode: "verify_provider", enrollmentId, providerType: "taxi", reference: "browser-e2e" },
     });
@@ -195,15 +196,17 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     }
   });
 
-  test("Step 15-18: W3-R exists in backend, refresh recovers state", async ({ page, request }) => {
-    // Verify W3-R exists via results API
-    const resultsRes = await request.get(`/api/oryxx/willingness/results?experimentId=${EXPERIMENT_ID}`);
+  test("Step 15-18: W3-R exists in backend, refresh recovers state", async ({ page }) => {
+    // Sign in first (API calls need the session cookie)
+    await signIn(page, PARTICIPANT_EMAIL, PARTICIPANT_PASSWORD);
+
+    // Verify W3-R exists via results API (uses page.request to share session)
+    const resultsRes = await page.request.get(`/api/oryxx/willingness/results?experimentId=${EXPERIMENT_ID}`);
     expect(resultsRes.status()).toBe(200);
     const resultsData = await resultsRes.json();
     expect(resultsData.w3Count + resultsData.w4Count).toBeGreaterThan(0);
 
-    // Now sign in as participant and verify state recovers after refresh
-    await signIn(page, PARTICIPANT_EMAIL, PARTICIPANT_PASSWORD);
+    // Open participant view and select experiment to trigger state recovery
     await openParticipantView(page);
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
     await page.waitForTimeout(2000);
@@ -216,9 +219,15 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     await expect(offerState).toBeVisible({ timeout: 5000 });
     await expect(offerState).toContainText(/accepted/i);
 
-    // Refresh the page
+    // Refresh the page — React state resets, so we need to re-open the view
     await page.reload();
-    await page.waitForTimeout(2000);
+    await page.waitForLoadState("networkidle");
+
+    // Re-open the participant view and select the experiment
+    const participantTab = page.locator("button:has-text('Research Participant')");
+    await participantTab.waitFor({ state: "visible", timeout: 10000 });
+    await participantTab.click();
+    await page.waitForTimeout(1000);
 
     // Verify state is STILL recovered after refresh
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
@@ -233,11 +242,12 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
     await page.waitForTimeout(2000);
 
+    // Register dialog handler BEFORE clicking withdraw
+    page.on("dialog", (dialog) => dialog.accept());
+
     // Click withdraw
     const withdrawBtn = page.locator("[data-testid='withdraw-button']");
     if (await withdrawBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      // Accept the confirm dialog
-      page.on("dialog", (dialog) => dialog.accept());
       await withdrawBtn.click();
       await page.waitForTimeout(2000);
     }
@@ -245,17 +255,25 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     // Verify withdrawn state appears
     await expect(page.locator("[data-testid='withdrawn-state']")).toBeVisible({ timeout: 10000 });
 
-    // Refresh
+    // Refresh — the page reloads, so we need to re-navigate to the participant view
     await page.reload();
+    await page.waitForLoadState("networkidle");
+
+    // Re-open the participant view and select the experiment
+    const participantTab = page.locator("button:has-text('Research Participant')");
+    await participantTab.waitFor({ state: "visible", timeout: 10000 });
+    await participantTab.click();
+    await page.waitForTimeout(1000);
+
+    // Select the experiment to trigger state recovery
+    await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
     await page.waitForTimeout(2000);
 
     // Verify withdrawn state persists after refresh
-    await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(2000);
     await expect(page.locator("[data-testid='withdrawn-state']")).toBeVisible({ timeout: 10000 });
   });
 
-  test("Step 10 (cross-participant): Participant B cannot see A's offer", async ({ page, request }) => {
+  test("Step 10 (cross-participant): Participant B cannot see A's offer", async ({ page }) => {
     // Sign in as participant B
     await signIn(page, PARTICIPANT_B_EMAIL, PARTICIPANT_B_PASSWORD);
     await openParticipantView(page);
@@ -280,7 +298,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     } else if (offerVisible) {
       // B is enrolled with their own offer — verify it's B's, not A's
       // (the server derives identity from session, so B can only see B's data)
-      const bRes = await request.post("/api/oryxx/willingness/experiment", {
+      const bRes = await page.request.post("/api/oryxx/willingness/experiment", {
         headers: { "Content-Type": "application/json" },
         data: { mode: "get_enrollment", experimentId: EXPERIMENT_ID },
       });
@@ -294,7 +312,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Negative authorization: B cannot access A's enrollment via get_enrollment
     // (server derives identity from session — B only sees B's data)
-    const bCheckRes = await request.post("/api/oryxx/willingness/experiment", {
+    const bCheckRes = await page.request.post("/api/oryxx/willingness/experiment", {
       headers: { "Content-Type": "application/json" },
       data: { mode: "get_enrollment", experimentId: EXPERIMENT_ID },
     });
@@ -310,8 +328,9 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 test.describe("Operator Dashboard — Browser E2E", () => {
   test("Operator views dashboard, runs integrity check, pauses, resumes", async ({ page }) => {
     await signIn(page, ADMIN_EMAIL, ADMIN_PASSWORD);
-    await page.goto("/");
-    await page.waitForTimeout(1500);
+    // Page is already at "/" and authenticated — no need for another goto
+    await page.waitForLoadState("networkidle");
+    await page.waitForTimeout(500);
 
     // Click the Operator Dashboard tab (admin-only)
     const operatorTab = page.locator("button:has-text('Operator Dashboard')");
