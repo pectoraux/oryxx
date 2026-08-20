@@ -50,19 +50,42 @@ const EXPERIMENT_ID = process.env.TEST_EXPERIMENT_ID!;
 
 async function signIn(page: Page, email: string, password: string) {
   await page.goto("/");
-  // Wait for the page to load and the sign-in button to appear
+  await page.waitForLoadState("networkidle");
   await page.waitForTimeout(1000);
-  // Click "Sign in" button if not already authenticated
-  const signInButton = page.locator("button:has-text('Sign in')");
-  if (await signInButton.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await signInButton.click();
-    await page.waitForTimeout(500);
+
+  // If already authenticated (session cookie), skip sign-in
+  const sessionRes = await page.request.get("/api/auth/session");
+  const sessionData = await sessionRes.json().catch(() => ({}));
+  if (sessionData?.user?.email === email) return;
+
+  // Open the auth modal by clicking the header "Sign in" button
+  const headerSignIn = page.locator("header button:has-text('Sign in')");
+  if (await headerSignIn.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await headerSignIn.click();
+    await page.waitForTimeout(1000);
   }
-  // Fill credentials in the auth modal
-  await page.fill('input[type="email"]', email);
-  await page.fill('input[type="password"]', password);
-  await page.click('button:has-text("Sign in")');
-  await page.waitForTimeout(2000);
+
+  // Wait for the dialog to appear, then fill credentials inside it.
+  // Target the dialog's email/password fields specifically (not any
+  // demo-account fields that might also exist).
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 10000 });
+
+  // Fill email and password inside the dialog
+  const emailInput = dialog.locator('input[type="email"]');
+  const passwordInput = dialog.locator('input[type="password"]');
+  await emailInput.fill(email);
+  await passwordInput.fill(password);
+
+  // Click the "Sign in" button INSIDE the dialog (not the header button).
+  // The dialog overlay intercepts clicks on elements behind it, so we must
+  // target the dialog's submit button specifically.
+  const dialogSignInButton = dialog.locator('button:has-text("Sign in")').last();
+  await dialogSignInButton.click();
+
+  // Wait for navigation/session to settle
+  await page.waitForTimeout(3000);
+  await page.waitForLoadState("networkidle");
 }
 
 async function openParticipantView(page: Page) {
