@@ -487,7 +487,7 @@ export async function POST(req: Request) {
           state: "OFFER_CREATED", evidenceTier: "NONE", offerExpiresAt: expiresAt.toISOString(),
         },
       });
-      const lastEvent = await tx.experimentEvent.findFirst({ where: { offerId: response.id }, orderBy: { timestamp: "desc" } });
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { experimentId: exp.id }, orderBy: { timestamp: "desc" } });
       const event = createEvent(exp.id, response.id, enrollment.participantId, null, "OFFER_CREATED", "system", email ?? "system", lastEvent?.eventHash ?? null);
       await tx.experimentEvent.create({ data: event });
       return { response };
@@ -602,7 +602,7 @@ export async function POST(req: Request) {
         if (expiryUpdated.count === 0) throw new Error("RACE_CONDITION");
 
         // Append audit event for the expiry transition
-        const lastEvent = await tx.experimentEvent.findFirst({ where: { offerId: responseId }, orderBy: { timestamp: "desc" } });
+        const lastEvent = await tx.experimentEvent.findFirst({ where: { experimentId: enrollment.experimentId }, orderBy: { timestamp: "desc" } });
         const expiryEvent = createEvent(
           enrollment.experimentId, responseId, enrollment.participantId,
           actualState, "PROVIDER_IGNORED",
@@ -625,7 +625,7 @@ export async function POST(req: Request) {
       if (updated.count === 0) throw new Error("RACE_CONDITION");
 
       // 6. Append audit event (same transaction)
-      const lastEvent = await tx.experimentEvent.findFirst({ where: { offerId: responseId }, orderBy: { timestamp: "desc" } });
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { experimentId: enrollment.experimentId }, orderBy: { timestamp: "desc" } });
       const event = createEvent(
         enrollment.experimentId, responseId, enrollment.participantId,
         fromState, newState,
