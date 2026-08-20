@@ -17,6 +17,7 @@ import {
   Globe,
   Layers,
   Filter,
+  UserCheck,
 } from "lucide-react";
 import { AuthGate } from "@/components/auth/auth-gate";
 import { UserMenu } from "@/components/auth/user-menu";
@@ -27,8 +28,10 @@ import { ExperimentLab } from "@/components/oryxx/experiment-lab";
 import { RealLab } from "@/components/oryxx/real-lab";
 import { CapacityLab } from "@/components/oryxx/capacity-lab";
 import { WillingnessLab } from "@/components/oryxx/willingness-lab";
+import { ProviderResearchUI } from "@/components/oryxx/provider-research-ui";
+import { ResearchOperatorDashboard } from "@/components/oryxx/research-operator-dashboard";
 
-type View = "solver" | "market" | "experiment" | "real" | "capacity" | "willingness";
+type View = "solver" | "market" | "experiment" | "real" | "capacity" | "willingness" | "participant" | "operator";
 
 export default function Home() {
   const { data: session, status } = useSession();
@@ -156,9 +159,27 @@ export default function Home() {
               >
                 <Filter className="h-3.5 w-3.5" /> Willingness Lab
               </button>
+              <button
+                onClick={() => setView("participant")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  view === "participant" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <UserCheck className="h-3.5 w-3.5" /> Research Participant
+              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => setView("operator")}
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                    view === "operator" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" /> Operator Dashboard
+                </button>
+              )}
             </div>
           </div>
-          {view === "solver" ? <OryxConsole /> : view === "market" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div> : view === "experiment" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><ExperimentLab /></div> : view === "real" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><RealLab /></div> : view === "capacity" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><CapacityLab /></div> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><WillingnessLab /></div>}
+          {view === "solver" ? <OryxConsole /> : view === "market" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div> : view === "experiment" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><ExperimentLab /></div> : view === "real" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><RealLab /></div> : view === "capacity" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><CapacityLab /></div> : view === "willingness" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><WillingnessLab /></div> : view === "participant" ? <div className="mx-auto w-full max-w-3xl px-4 py-6"><ProviderResearchUI /></div> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><ResearchOperatorDashboard /></div>}
         </>
       ) : (
         <UnauthenticatedLanding onSignIn={() => setAuthOpen(true)} />

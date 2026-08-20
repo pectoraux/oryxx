@@ -150,6 +150,23 @@ jobs:
           DATABASE_URL: ${{ env.DATABASE_URL }}
           DIRECT_URL: ${{ env.DIRECT_URL }}
 
+      # ─── E2E PARTICIPANT JOURNEY TEST ───────────────────────────────
+      # Exercises the FULL provider participant journey that the
+      # ProviderResearchUI component drives: enroll → consent → verify →
+      # create_offer → transition (PRESENTED → VIEWED → ACCEPTED → STARTED
+      # → COMPLETED) → results → integrity_check → export_analysis →
+      # export_audit → withdraw → post-withdrawal rejection → cross-account
+      # authorization → pause/resume.
+      #
+      # Verifies the UI's API calls actually work against the frozen backend
+      # and that W3-R/W4-R evidence is created through the valid event
+      # sequence only.
+      - name: E2E participant journey test (UI flow → API → DB)
+        run: bun test tests/oryxx-participant-e2e.test.ts --timeout 120000
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          DIRECT_URL: ${{ env.DIRECT_URL }}
+
       # ─── LINT ───────────────────────────────────────────────────────
       - name: Lint
         run: bun run lint
@@ -206,6 +223,7 @@ jobs:
           echo "    ✓ Unit tests (8 files, 135 tests)"
           echo "    ✓ DB-backed concurrency tests (transitions, withdrawal, expiry)"
           echo "    ✓ HTTP-level enrollment concurrency (production route, 10 tests)"
+          echo "    ✓ E2E participant journey (UI flow → API → DB, 23 tests)"
           echo "    ✓ Lint"
           echo "    ✓ Production build"
           echo "    ✓ Cleanup verification (zero test data remaining)"
