@@ -25,11 +25,20 @@
 // production code path — never re-implemented here.
 //
 // PREREQUISITES:
-//   - DATABASE_URL must point to the real PostgreSQL (Neon) database
+//   - DATABASE_URL must point to a real PostgreSQL database
 //   - The ExperimentEnrollment table must exist with the composite unique
 //     constraint @@unique([experimentId, accountEmail])
 //
-// Run with: bun test tests/oryxx-enrollment-http.test.ts --timeout 300000
+// CI: This test is executed by .github/workflows/research-integrity.yml
+// against a fresh PostgreSQL 16 service container per run. The workflow
+// applies the Prisma schema via `prisma db push` before running this test.
+//
+// Local: Run with:
+//   DATABASE_URL="postgresql://..." DIRECT_URL="postgresql://..." \
+//     bun test tests/oryxx-enrollment-http.test.ts --timeout 300000
+//
+// NEVER run against production Neon. The test creates and deletes experiments
+// and enrollments — it is for CI/isolated databases only.
 
 import { test, expect, describe, beforeAll, afterAll, mock } from "bun:test";
 import { AsyncLocalStorage } from "async_hooks";
