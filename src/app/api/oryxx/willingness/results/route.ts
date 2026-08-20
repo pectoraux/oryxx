@@ -51,7 +51,9 @@ export async function GET(req: Request) {
     const cellResponses = responses.filter((r) => r.treatmentCellId === cell.id);
     const econ = computeCellEconomics(cell, design);
     const offers = cellResponses.length;
-    const viewed = cellResponses.filter((r) => ["PROVIDER_VIEWED", "PROVIDER_ACCEPTED", "PROVIDER_DECLINED", "PROVIDER_UNAVAILABLE"].includes(r.state)).length;
+    // "viewed" = the offer was seen by the provider (any state after PROVIDER_VIEWED,
+    // including terminal states like TRIP_COMPLETED/IGNORED that imply prior viewing).
+    const viewed = cellResponses.filter((r) => ["PROVIDER_VIEWED", "PROVIDER_ACCEPTED", "PROVIDER_DECLINED", "PROVIDER_UNAVAILABLE", "PROVIDER_IGNORED", "TRIP_STARTED", "TRIP_COMPLETED", "TRIP_CANCELLED"].includes(r.state)).length;
     const accepted = cellResponses.filter((r) => ["PROVIDER_ACCEPTED", "TRIP_STARTED", "TRIP_COMPLETED", "TRIP_CANCELLED"].includes(r.state)).length;
     const declined = cellResponses.filter((r) => r.state === "PROVIDER_DECLINED").length;
     const unavailable = cellResponses.filter((r) => r.state === "PROVIDER_UNAVAILABLE").length;
