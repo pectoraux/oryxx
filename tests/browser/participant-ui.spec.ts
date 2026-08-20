@@ -362,8 +362,8 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 test.describe("Operator Dashboard — Browser E2E", () => {
   test("Operator views dashboard, runs integrity check, pauses, resumes", async ({ page }) => {
     await signIn(page, ADMIN_EMAIL, ADMIN_PASSWORD);
-    // Page is already at "/" and authenticated — no need for another goto
-    await page.waitForLoadState("networkidle");
+    // Wait for the authenticated view to render (nav tabs visible)
+    await page.locator("button:has-text('Research Participant')").waitFor({ state: "visible", timeout: 15000 });
     await page.waitForTimeout(500);
 
     // Click the Operator Dashboard tab (admin-only)

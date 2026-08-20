@@ -220,10 +220,13 @@ export function ProviderResearchUI() {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const newOffer: OfferResponse = data.response;
       setOffer(newOffer);
-      // Use the returned response ID directly (not closure state) for transitions
-      await transitionWith(newOffer.id, "OFFER_PRESENTED", newOffer);
-      // After OFFER_PRESENTED, transition to PROVIDER_VIEWED using the updated state
-      // (transitionWith updates React state, but we pass the response ID explicitly)
+      // Use the returned response ID directly (not closure state) for transitions.
+      // Chain: OFFER_CREATED → OFFER_PRESENTED → PROVIDER_VIEWED.
+      // The accept button only appears when state === PROVIDER_VIEWED.
+      const presented = await transitionWith(newOffer.id, "OFFER_PRESENTED", newOffer);
+      if (presented) {
+        await transitionWith(newOffer.id, "PROVIDER_VIEWED", presented);
+      }
     } catch (e) {
       toast({ title: "Offer creation failed", description: String(e), variant: "destructive" });
     } finally {
