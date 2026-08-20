@@ -200,25 +200,57 @@ export async function POST(req: Request) {
     const cells = generateTreatmentCells(design);
     let result: { enrollment: any; cell: any } | null = null;
     let lastErr: any = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // Retry loop for transient concurrency errors:
+    //   P2034 = serialization conflict (Serializable SSI abort)
+    //   P2028 = transaction-start timeout (connection-pool exhaustion under burst load)
+    //   P2024 = connection-pool timeout
+    // All are transient and retried to avoid HTTP 500 under concurrent enrollment.
+    // P2002 (unique-constraint violation = duplicate enrollment) is NOT retried —
+    // it returns 409 immediately (permanent error).
+    //
+    // PER-EXPERIMENT PESSIMISTIC LOCK (v7.2):
+    // The previous Serializable isolation caused cascading SSI aborts under
+    // 100-way concurrent enrollment (each commit invalidated all in-flight
+    // readers). ReadCommitted + SELECT...FOR UPDATE on the experiment row
+    // serializes enrollments per experiment at the DB level (FIFO queue),
+    // eliminating SSI storms while preserving exact least-filled allocation.
+    // The FOR UPDATE lock guarantees each transaction sees all prior committed
+    // enrollments, so assignTreatment() always computes correct cell counts.
+    //
+    // UNCHANGED (research protocol frozen):
+    //   - @@unique([experimentId, accountEmail]) → P2002 → 409
+    //   - assignTreatment() least-filled algorithm
+    //   - Treatment cells, compensation/detour/notice buckets, stopping rule
+    //   - Evidence definitions (W3-R/W4-R tiers, state machine, audit trail)
+    const retryDeadline = Date.now() + 60000;
+    let attempt = 0;
+    while (Date.now() < retryDeadline) {
       try {
         result = await db.$transaction(async (tx) => {
+          // Pessimistic row lock: serializes all enrollments for this experiment.
+          // Other callers block here (at the DB level) until the current
+          // transaction commits or rolls back. ReadCommitted + FOR UPDATE
+          // guarantees we read the latest committed enrollment counts.
+          await tx.$queryRaw`SELECT id FROM "AcceptanceExperiment" WHERE id = ${experimentId} FOR UPDATE`;
           const enrollments = await tx.experimentEnrollment.findMany({ where: { experimentId, assignedCellId: { not: null } }, select: { assignedCellId: true } });
           const cellCounts = cells.map(c => enrollments.filter(e => e.assignedCellId === c.id).length);
           const cell = assignTreatment(participantId, experimentId, exp.randomizationSeed, cells, cellCounts);
           const enrollment = await tx.experimentEnrollment.create({ data: { experimentId, participantId, accountEmail: email, enrollmentToken, assignedCellId: cell.id, providerVerified: "unverified" } });
           return { enrollment, cell };
-        }, { isolationLevel: "Serializable" });
+        }, { isolationLevel: "ReadCommitted", maxWait: 10000, timeout: 30000 });
         break;
       } catch (err: any) {
         lastErr = err;
-        // P2002 = unique constraint violation (duplicate enrollment) — return 409, do NOT retry
+        // P2002 = unique-constraint violation (duplicate enrollment) → 409, NOT retried
         if (err?.code === "P2002") {
           return NextResponse.json({ error: "Account already enrolled in this experiment." }, { status: 409 });
         }
-        // P2034 = serialization conflict — retry with backoff
-        if (err?.code !== "P2034") throw err;
-        await new Promise(r => setTimeout(r, 50 * Math.pow(2, attempt)));
+        // Transient: serialization conflict, pool exhaustion — retry with backoff + jitter
+        const isTransient = err?.code === "P2034" || err?.code === "P2028" || err?.code === "P2024";
+        if (!isTransient) throw err;
+        const backoff = Math.min(100 * Math.pow(2, attempt % 5), 2000) + Math.random() * 100;
+        await new Promise(r => setTimeout(r, backoff));
+        attempt++;
       }
     }
     if (!result) throw lastErr ?? new Error("Enrollment failed after retries.");

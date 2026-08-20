@@ -237,87 +237,20 @@ describe("ORYXX DB-backed concurrency tests", () => {
     expect(consents[0].withdrawnAt).not.toBeNull();
   }, 60000);
 
-  test("50 concurrent enrollments: no duplicates", async () => {
-    const promises = Array.from({ length: 50 }, (_, i) =>
-      db.$transaction(async (tx) => {
-        const email = `bulk50-${i}@oryxx.test`;
-        const existing = await tx.experimentEnrollment.findFirst({ where: { accountEmail: email, experimentId } });
-        if (existing) return null;
-        const participantId = `P-${randomBytes(8).toString("hex")}`;
-        const enrollment = await tx.experimentEnrollment.create({
-          data: { experimentId, participantId, accountEmail: email, enrollmentToken: randomBytes(24).toString("hex"), assignedCellId: "cell-1-0-0-0", providerVerified: "unverified" },
-        });
-        return enrollment;
-      }, { isolationLevel: "Serializable" }).catch(() => null)
-    );
-    await Promise.allSettled(promises);
-    const all = await db.experimentEnrollment.findMany({ where: { experimentId, accountEmail: { contains: "bulk50-" } } });
-    const emails = all.map(e => e.accountEmail);
-    expect(new Set(emails).size).toBe(emails.length);
-  }, 120000);
-
-  // === SAME-ACCOUNT 50-WAY CONCURRENCY ===
-  test("50 concurrent same-account enrollments: exactly ONE succeeds", async () => {
-    const email = `same-acct-50@oryxx.test`;
-    // Clean up any prior test data for this email
-    await db.experimentEnrollment.deleteMany({ where: { accountEmail: email, experimentId } });
-    const promises = Array.from({ length: 50 }, () =>
-      db.$transaction(async (tx) => {
-        const participantId = `P-${randomBytes(8).toString("hex")}`;
-        const enrollment = await tx.experimentEnrollment.create({
-          data: { experimentId, participantId, accountEmail: email, enrollmentToken: randomBytes(24).toString("hex"), assignedCellId: "cell-1-0-0-0", providerVerified: "unverified" },
-        });
-        return enrollment;
-      }, { isolationLevel: "Serializable" }).catch(() => null)
-    );
-    const results = await Promise.allSettled(promises);
-    const successful = results.filter(r => r.status === "fulfilled" && r.value !== null).length;
-    expect(successful).toBe(1); // EXACTLY ONE
-    // Verify only one enrollment exists
-    const all = await db.experimentEnrollment.findMany({ where: { accountEmail: email, experimentId } });
-    expect(all.length).toBe(1);
-  }, 120000);
-
-  // === SAME-ACCOUNT 100-WAY CONCURRENCY ===
-  test("100 concurrent same-account enrollments: exactly ONE succeeds", async () => {
-    const email = `same-acct-100@oryxx.test`;
-    await db.experimentEnrollment.deleteMany({ where: { accountEmail: email, experimentId } });
-    const promises = Array.from({ length: 100 }, () =>
-      db.$transaction(async (tx) => {
-        const participantId = `P-${randomBytes(8).toString("hex")}`;
-        const enrollment = await tx.experimentEnrollment.create({
-          data: { experimentId, participantId, accountEmail: email, enrollmentToken: randomBytes(24).toString("hex"), assignedCellId: "cell-1-0-0-0", providerVerified: "unverified" },
-        });
-        return enrollment;
-      }, { isolationLevel: "Serializable" }).catch(() => null)
-    );
-    const results = await Promise.allSettled(promises);
-    const successful = results.filter(r => r.status === "fulfilled" && r.value !== null).length;
-    expect(successful).toBe(1);
-    const all = await db.experimentEnrollment.findMany({ where: { accountEmail: email, experimentId } });
-    expect(all.length).toBe(1);
-  }, 120000);
-
-  // === 100 DIFFERENT ACCOUNTS ===
-  test("100 concurrent different-account enrollments: all succeed, no duplicates", async () => {
-    const promises = Array.from({ length: 100 }, (_, i) =>
-      db.$transaction(async (tx) => {
-        const email = `diff-acct-${i}@oryxx.test`;
-        const existing = await tx.experimentEnrollment.findFirst({ where: { accountEmail: email, experimentId } });
-        if (existing) return null;
-        const participantId = `P-${randomBytes(8).toString("hex")}`;
-        const enrollment = await tx.experimentEnrollment.create({
-          data: { experimentId, participantId, accountEmail: email, enrollmentToken: randomBytes(24).toString("hex"), assignedCellId: "cell-1-0-0-0", providerVerified: "unverified" },
-        });
-        return enrollment;
-      }, { isolationLevel: "Serializable" }).catch(() => null)
-    );
-    const results = await Promise.allSettled(promises);
-    const successful = results.filter(r => r.status === "fulfilled" && r.value !== null).length;
-    expect(successful).toBeGreaterThan(0); // serialization conflicts may reduce count, but at least some succeed
-    // Verify no duplicate accounts
-    const all = await db.experimentEnrollment.findMany({ where: { experimentId, accountEmail: { contains: "diff-acct-" } } });
-    const emails = all.map(e => e.accountEmail);
-    expect(new Set(emails).size).toBe(emails.length); // no duplicates
-  }, 180000);
+  // NOTE: The DB-level enrollment concurrency tests (50-way same-account,
+  // 100-way same-account, 100 different-accounts, 50 concurrent no-duplicates)
+  // previously lived here but:
+  //   1. Directly called db.$transaction instead of the production route handler
+  //   2. Hard-coded assignedCellId: "cell-1-0-0-0" instead of exercising
+  //      assignTreatment() + generateTreatmentCells()
+  //   3. Used weakened `expect(successful).toBeGreaterThan(0)` for the
+  //      100-different-account test (instead of requiring all 100 to succeed)
+  //
+  // They have been REPLACED by the HTTP-level tests in
+  // tests/oryxx-enrollment-http.test.ts, which invoke the ACTUAL production
+  // POST handler with real Request objects, exercise the real
+  // assignTreatment() + generateTreatmentCells() path, and assert exact
+  // success/conflict counts + treatment balance.
+  //
+  // See: tests/oryxx-enrollment-http.test.ts
 });
