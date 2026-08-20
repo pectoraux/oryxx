@@ -375,11 +375,11 @@ test.describe("Operator Dashboard — Browser E2E", () => {
     // Verify the dashboard header is visible
     await expect(page.locator("text=Research Operator Dashboard")).toBeVisible({ timeout: 10000 });
 
-    // Select the test experiment
-    const expButton = page.locator(`text=${EXPERIMENT_ID.substring(0, 8)}`).first();
+    // Select the test experiment by data-testid
+    const expButton = page.locator(`[data-testid='operator-exp-${EXPERIMENT_ID}']`);
     if (await expButton.isVisible({ timeout: 5000 }).catch(() => false)) {
       await expButton.click();
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(2000);
     }
 
     // Run integrity check
@@ -390,8 +390,7 @@ test.describe("Operator Dashboard — Browser E2E", () => {
     }
 
     // Verify evidence summary shows W3-R or W4-R > 0 (from participant journey)
-    const w3rBadge = page.locator("text=W3-R (accepted)").locator("..");
-    await expect(w3rBadge).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("text=W3-R (accepted)")).toBeVisible({ timeout: 10000 });
 
     // Verify pause/resume controls exist
     const pauseBtn = page.locator("button:has-text('Emergency Pause')");

@@ -185,6 +185,7 @@ export function ResearchOperatorDashboard() {
             {experiments.map((exp) => (
               <button
                 key={exp.id}
+                data-testid={`operator-exp-${exp.id}`}
                 onClick={() => { setSelectedExpId(exp.id); setGate(null); setIntegrity(null); }}
                 className={`w-full text-left p-2 rounded border text-sm transition-colors ${selectedExpId === exp.id ? "bg-accent" : "hover:bg-accent/50"}`}
               >
