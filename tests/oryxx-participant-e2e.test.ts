@@ -379,7 +379,8 @@ describe("ORYXX E2E participant journey — UI → API → DB", () => {
     expect(res.body.hasW4Evidence).toBe(true);
 
     // Find the cell that has our response
-    const ourCell = res.body.cellResults.find((c: any) => c.cell.id === (await db.experimentEnrollment.findUnique({ where: { id: enrollmentId } }))?.assignedCellId);
+    const enrollment = await db.experimentEnrollment.findUnique({ where: { id: enrollmentId } });
+    const ourCell = res.body.cellResults.find((c: any) => c.cell.id === enrollment?.assignedCellId);
     expect(ourCell).toBeTruthy();
     expect(ourCell.accepted).toBe(1);
     expect(ourCell.completed).toBe(1);
