@@ -92,6 +92,18 @@ async function openParticipantView(page: Page) {
   await page.waitForTimeout(500);
 }
 
+// Wait for state recovery to complete by checking for any content section.
+// During recovery, the UI shows a loading spinner. After recovery, one of
+// these sections appears depending on the participant's state.
+async function waitForRecovery(page: Page) {
+  // Wait for any content section to appear (indicates recovery is done)
+  await page.locator(
+    "[data-testid='enroll-section'], [data-testid='consent-section'], " +
+    "[data-testid='consent-recorded'], [data-testid='verification-pending'], " +
+    "[data-testid='offer-card'], [data-testid='withdrawn-state']"
+  ).first().waitFor({ state: "visible", timeout: 15000 });
+}
+
 test.describe("Provider Participant UI — Browser E2E", () => {
   test("Step 1-6: Participant signs in, opens UI, enrolls", async ({ page }) => {
     await signIn(page, PARTICIPANT_EMAIL, PARTICIPANT_PASSWORD);
@@ -105,7 +117,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Click on the test experiment
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(1000);
+    await waitForRecovery(page);
 
     // Verify enroll section appears (not yet enrolled)
     await expect(page.locator("[data-testid='enroll-section']")).toBeVisible({ timeout: 10000 });
@@ -124,7 +136,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Select experiment
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(1500);
+    await waitForRecovery(page);
 
     // If enrolled but not consented, give consent
     const consentSection = page.locator("[data-testid='consent-section']");
@@ -165,7 +177,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Select experiment
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(2000);
+    await waitForRecovery(page);
 
     // Should now be verified + consented — create offer
     const createOfferBtn = page.locator("[data-testid='create-offer-button']");
@@ -209,7 +221,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     // Open participant view and select experiment to trigger state recovery
     await openParticipantView(page);
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(2000);
+    await waitForRecovery(page);
 
     // Verify the offer card is visible (recovered) — not the enroll/consent section
     await expect(page.locator("[data-testid='offer-card']")).toBeVisible({ timeout: 10000 });
@@ -231,7 +243,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Verify state is STILL recovered after refresh
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(2000);
+    await waitForRecovery(page);
     await expect(page.locator("[data-testid='offer-card']")).toBeVisible({ timeout: 10000 });
     await expect(page.locator("[data-testid='offer-state']")).toContainText(/accepted/i);
   });
@@ -240,7 +252,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     await signIn(page, PARTICIPANT_EMAIL, PARTICIPANT_PASSWORD);
     await openParticipantView(page);
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(2000);
+    await waitForRecovery(page);
 
     // Register dialog handler BEFORE clicking withdraw
     page.on("dialog", (dialog) => dialog.accept());
@@ -267,7 +279,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Select the experiment to trigger state recovery
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(2000);
+    await waitForRecovery(page);
 
     // Verify withdrawn state persists after refresh
     await expect(page.locator("[data-testid='withdrawn-state']")).toBeVisible({ timeout: 10000 });
@@ -280,7 +292,7 @@ test.describe("Provider Participant UI — Browser E2E", () => {
 
     // Select the same experiment
     await page.locator(`[data-testid='experiment-${EXPERIMENT_ID}']`).click();
-    await page.waitForTimeout(2000);
+    await waitForRecovery(page);
 
     // Participant B should NOT see A's offer. B either:
     // - sees the enroll section (not enrolled), OR
