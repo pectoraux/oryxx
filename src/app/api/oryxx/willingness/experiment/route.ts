@@ -152,7 +152,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ preregistrationHash: hash, message: "Preregistered." });
   }
 
-  // === ACTIVATE (admin) — validates hash ===
+  // === ACTIVATE (admin) — validates hash + activation gate ===
   if (mode === "activate") {
     if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
     const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
@@ -163,8 +163,146 @@ export async function POST(req: Request) {
     if (!verifyDesignHash(design, exp.preregistrationHash)) {
       return NextResponse.json({ error: "PREREGISTRATION HASH MISMATCH." }, { status: 400 });
     }
-    await db.acceptanceExperiment.update({ where: { id: exp.id }, data: { status: "ACTIVE" } });
-    return NextResponse.json({ message: "ACTIVE. Hash verified." });
+
+    // ─── ACTIVATION GATE (section 16) ─────────────────────────────────
+    // The experiment CANNOT move to ACTIVE unless all gates pass.
+    // This is a deterministic "Can Activate?" check enforced server-side.
+    const gate = await runActivationGate(exp);
+    if (!gate.canActivate) {
+      return NextResponse.json({ error: "Activation gate FAILED.", gate }, { status: 400 });
+    }
+
+    await db.$transaction(async (tx) => {
+      await tx.acceptanceExperiment.update({ where: { id: exp.id }, data: { status: "ACTIVE" } });
+      // Hash-chained audit event for activation
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { experimentId: exp.id }, orderBy: { timestamp: "desc" } });
+      const event = createEvent(exp.id, "activation", "system", "PREREGISTERED", "ACTIVE", "admin", email ?? "admin", lastEvent?.eventHash ?? null);
+      await tx.experimentEvent.create({ data: event });
+    }, { isolationLevel: "Serializable" });
+    return NextResponse.json({ message: "ACTIVE. Hash verified. Activation gate passed.", gate });
+  }
+
+  // === ACTIVATION GATE CHECK (admin) — "Can Activate?" without activating ===
+  // Returns PASS/FAIL for every required gate. Does NOT change experiment status.
+  if (mode === "activation_check") {
+    if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
+    const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
+    if (!exp) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    const gate = await runActivationGate(exp);
+    return NextResponse.json({ gate });
+  }
+
+  // === PAUSE (admin) — emergency stop ===
+  // ACTIVE → PAUSED. No new enrollments, offers, or transitions accepted
+  // while PAUSED. Historical records remain intact. The preregistered
+  // treatment design is NOT modified during pause.
+  if (mode === "pause") {
+    if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
+    const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
+    if (!exp) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    if (exp.status !== "ACTIVE") return NextResponse.json({ error: `Cannot pause: status is ${exp.status}.` }, { status: 400 });
+    await db.$transaction(async (tx) => {
+      await tx.acceptanceExperiment.update({ where: { id: exp.id }, data: { status: "PAUSED" } });
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { experimentId: exp.id }, orderBy: { timestamp: "desc" } });
+      const event = createEvent(exp.id, "pause", "system", "ACTIVE", "PAUSED", "admin", email ?? "admin", lastEvent?.eventHash ?? null);
+      await tx.experimentEvent.create({ data: event });
+    }, { isolationLevel: "Serializable" });
+    return NextResponse.json({ message: "PAUSED. No new enrollments, offers, or transitions accepted. Historical records intact." });
+  }
+
+  // === RESUME (admin) — PAUSED → ACTIVE (re-runs activation gate) ===
+  if (mode === "resume") {
+    if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
+    const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
+    if (!exp) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    if (exp.status !== "PAUSED") return NextResponse.json({ error: `Cannot resume: status is ${exp.status}.` }, { status: 400 });
+    // Re-verify hash before resuming (design must not have changed)
+    const design = loadDesignStrict(exp.treatmentDesignJson);
+    if (!verifyDesignHash(design, exp.preregistrationHash!)) {
+      return NextResponse.json({ error: "PREREGISTRATION HASH MISMATCH on resume." }, { status: 400 });
+    }
+    await db.$transaction(async (tx) => {
+      await tx.acceptanceExperiment.update({ where: { id: exp.id }, data: { status: "ACTIVE" } });
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { experimentId: exp.id }, orderBy: { timestamp: "desc" } });
+      const event = createEvent(exp.id, "resume", "system", "PAUSED", "ACTIVE", "admin", email ?? "admin", lastEvent?.eventHash ?? null);
+      await tx.experimentEvent.create({ data: event });
+    }, { isolationLevel: "Serializable" });
+    return NextResponse.json({ message: "Resumed. Status ACTIVE. Hash verified." });
+  }
+
+  // === COMPLETE (admin) — ACTIVE → COMPLETED (stop gate) ===
+  // Requires the preregistered stopping rule to be satisfied.
+  if (mode === "complete") {
+    if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
+    const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
+    if (!exp) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    if (exp.status !== "ACTIVE" && exp.status !== "PAUSED") return NextResponse.json({ error: `Cannot complete: status is ${exp.status}.` }, { status: 400 });
+    // Stop gate: verify stopping rule satisfied
+    const responseCount = await db.providerResponse.count({ where: { experimentId: exp.id } });
+    const stopGate = await runStopGate(exp, responseCount);
+    if (!stopGate.canComplete) {
+      return NextResponse.json({ error: "Stop gate FAILED. Stopping rule not satisfied.", stopGate }, { status: 400 });
+    }
+    await db.$transaction(async (tx) => {
+      await tx.acceptanceExperiment.update({ where: { id: exp.id }, data: { status: "COMPLETED" } });
+      const lastEvent = await tx.experimentEvent.findFirst({ where: { experimentId: exp.id }, orderBy: { timestamp: "desc" } });
+      const event = createEvent(exp.id, "complete", "system", exp.status, "COMPLETED", "admin", email ?? "admin", lastEvent?.eventHash ?? null);
+      await tx.experimentEvent.create({ data: event });
+    }, { isolationLevel: "Serializable" });
+    return NextResponse.json({ message: "COMPLETED. Stop gate passed.", stopGate });
+  }
+
+  // === INTEGRITY CHECK (admin) — real-time integrity monitoring ===
+  // Detects integrity violations (section 12). Does NOT modify data.
+  if (mode === "integrity_check") {
+    if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
+    const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
+    if (!exp) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    const report = await runIntegrityCheck(exp);
+    return NextResponse.json({ report });
+  }
+
+  // === EXPORT ANALYSIS (admin) — operator-only analysis dataset ===
+  // Fails closed if integrity violations are detected.
+  if (mode === "export_analysis") {
+    if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
+    const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
+    if (!exp) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    // Run integrity check first — fail closed
+    const report = await runIntegrityCheck(exp);
+    if (report.violations.length > 0) {
+      return NextResponse.json({ error: "Analysis export FAILED — integrity violations detected.", violations: report.violations }, { status: 400 });
+    }
+    const dataset = await buildAnalysisDataset(exp);
+    return NextResponse.json({ experimentId: exp.id, preregistrationHash: exp.preregistrationHash, dataset });
+  }
+
+  // === EXPORT AUDIT (admin) — operator-only audit trail dataset ===
+  if (mode === "export_audit") {
+    if (role !== "admin") return NextResponse.json({ error: "Admin required." }, { status: 403 });
+    const exp = await db.acceptanceExperiment.findUnique({ where: { id: body?.experimentId } });
+    if (!exp) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    const events = await db.experimentEvent.findMany({ where: { experimentId: exp.id }, orderBy: { timestamp: "asc" } });
+    // Verify hash chain integrity
+    let chainValid = true;
+    let previousHash: string | null = null;
+    for (const e of events) {
+      if (e.previousEventHash !== previousHash) { chainValid = false; break; }
+      previousHash = e.eventHash;
+    }
+    return NextResponse.json({
+      experimentId: exp.id,
+      preregistrationHash: exp.preregistrationHash,
+      chainValid,
+      eventCount: events.length,
+      events: events.map((e) => ({
+        offerId: e.offerId === "activation" || e.offerId === "pause" || e.offerId === "resume" || e.offerId === "complete" ? e.offerId : e.offerId.substring(0, 8) + "…",
+        participantPseudonym: e.participantId.substring(0, 8) + "…",
+        fromState: e.fromState, toState: e.toState,
+        timestamp: e.timestamp, actorType: e.actorType, actorId: e.actorId.substring(0, 8) + "…",
+        eventHash: e.eventHash, previousEventHash: e.previousEventHash,
+      })),
+    });
   }
 
   // === VERIFY PROVIDER (admin) ===
@@ -524,4 +662,321 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ error: "Unknown mode." }, { status: 400 });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PILOT OPERATIONAL HELPERS
+// ═══════════════════════════════════════════════════════════════════════
+
+interface GateCheck { name: string; passed: boolean; detail?: string; }
+
+interface ActivationGateResult {
+  canActivate: boolean;
+  checks: GateCheck[];
+}
+
+// Section 16: Pilot Start Gate — deterministic "Can Activate?" check.
+// Returns PASS/FAIL for every required gate. Experiment CANNOT move
+// PREREGISTERED → ACTIVE unless all gates pass.
+async function runActivationGate(exp: any): Promise<ActivationGateResult> {
+  const checks: GateCheck[] = [];
+
+  // 1. Preregistration
+  checks.push({
+    name: "preregistration",
+    passed: exp.status === "PREREGISTERED",
+    detail: `status=${exp.status}`,
+  });
+
+  // 2. Hash
+  const hasHash = !!exp.preregistrationHash;
+  let hashValid = false;
+  if (hasHash && exp.treatmentDesignJson) {
+    try {
+      const design = loadDesignStrict(exp.treatmentDesignJson);
+      hashValid = verifyDesignHash(design, exp.preregistrationHash);
+    } catch { hashValid = false; }
+  }
+  checks.push({ name: "hash", passed: hasHash && hashValid, detail: hasHash ? (hashValid ? "verified" : "MISMATCH") : "missing" });
+
+  // 3. Consent
+  const consentOk = !!exp.consentText && exp.consentText.length > 0 && (exp.consentVersion ?? 0) >= 1;
+  checks.push({ name: "consent", passed: consentOk, detail: `version=${exp.consentVersion}` });
+
+  // 4. Safety
+  const safetyOk = exp.maxDetourKm > 0 && exp.maxExtraTimeMin > 0 && exp.minCompensation > 0;
+  checks.push({ name: "safety", passed: safetyOk, detail: `maxDetour=${exp.maxDetourKm},maxTime=${exp.maxExtraTimeMin},minComp=${exp.minCompensation}` });
+
+  // 5. Treatment assignment
+  let treatmentOk = false;
+  let cellCount = 0;
+  if (exp.treatmentDesignJson && exp.preregistrationHash) {
+    try {
+      const design = loadDesignStrict(exp.treatmentDesignJson);
+      const cells = generateTreatmentCells(design);
+      cellCount = cells.length;
+      treatmentOk = cells.length > 0;
+    } catch { treatmentOk = false; }
+  }
+  checks.push({ name: "treatment_assignment", passed: treatmentOk, detail: `${cellCount} cells` });
+
+  // 6. Stopping rule
+  const stoppingOk = !!exp.stoppingRule && exp.stoppingRule.length > 0;
+  checks.push({ name: "stopping_rule", passed: stoppingOk });
+
+  // 7. Sample target
+  const sampleOk = (exp.sampleTarget ?? 0) > 0;
+  checks.push({ name: "sample_target", passed: sampleOk, detail: `target=${exp.sampleTarget}` });
+
+  // 8. No existing W3-R/W4-R evidence (prevents re-activation with stale evidence)
+  const existingResponses = await db.providerResponse.findMany({
+    where: { experimentId: exp.id, evidenceTier: { in: ["W3-R", "W4-R"] } },
+    select: { evidenceTier: true },
+  });
+  checks.push({ name: "no_existing_evidence", passed: existingResponses.length === 0, detail: `${existingResponses.length} existing W3-R/W4-R` });
+
+  // 9. No test participants enrolled
+  const testEnrollments = await db.experimentEnrollment.count({
+    where: { experimentId: exp.id, accountEmail: { contains: "@oryxx.test" } },
+  });
+  checks.push({ name: "no_test_participants", passed: testEnrollments === 0, detail: `${testEnrollments} test enrollments` });
+
+  // 10. No test experiments (by name pattern)
+  const testExperiments = await db.acceptanceExperiment.count({
+    where: { name: { contains: "HTTP Concurrency Test" } },
+  });
+  checks.push({ name: "no_test_experiments", passed: testExperiments === 0, detail: `${testExperiments} test experiments` });
+
+  const canActivate = checks.every((c) => c.passed);
+  return { canActivate, checks };
+}
+
+interface StopGateResult {
+  canComplete: boolean;
+  responseCount: number;
+  sampleTarget: number;
+  checks: GateCheck[];
+}
+
+// Section 17: Pilot Stop Gate — verifies stopping rule satisfied.
+async function runStopGate(exp: any, responseCount: number): Promise<StopGateResult> {
+  const checks: GateCheck[] = [];
+  const target = exp.sampleTarget ?? 100;
+
+  // Stopping rule: "Stop after 100 responses or 30 days."
+  checks.push({
+    name: "sample_target_reached",
+    passed: responseCount >= target,
+    detail: `${responseCount}/${target} responses`,
+  });
+
+  // Alternative: 30 days elapsed (check via preregisteredAt or first event)
+  let daysElapsed = 0;
+  if (exp.preregisteredAt) {
+    const prereg = new Date(exp.preregisteredAt);
+    daysElapsed = Math.floor((Date.now() - prereg.getTime()) / (1000 * 60 * 60 * 24));
+  }
+  checks.push({
+    name: "time_limit_reached",
+    passed: daysElapsed >= 30,
+    detail: `${daysElapsed}/30 days elapsed`,
+  });
+
+  // No pending transitions (all offers in terminal states)
+  const pending = await db.providerResponse.count({
+    where: {
+      experimentId: exp.id,
+      state: { in: ["OFFER_CREATED", "OFFER_PRESENTED", "PROVIDER_VIEWED", "PROVIDER_ACCEPTED", "TRIP_STARTED"] },
+    },
+  });
+  checks.push({ name: "no_pending_transitions", passed: pending === 0, detail: `${pending} pending` });
+
+  // Can complete if EITHER stopping condition is met AND no pending transitions
+  const stoppingRuleSatisfied = checks[0].passed || checks[1].passed;
+  const canComplete = stoppingRuleSatisfied && checks[2].passed;
+
+  return { canComplete, responseCount, sampleTarget: target, checks };
+}
+
+interface IntegrityViolation {
+  type: string;
+  detail: string;
+  severity: "critical" | "warning";
+}
+
+interface IntegrityReport {
+  violations: IntegrityViolation[];
+  counts: {
+    enrollments: number;
+    responses: number;
+    w3r: number;
+    w4r: number;
+    w3m: number;
+    w4m: number;
+    withdrawn: number;
+  };
+  hashChainValid: boolean;
+}
+
+// Section 12: Real-time integrity monitoring.
+// Detects integrity violations. Does NOT modify data.
+async function runIntegrityCheck(exp: any): Promise<IntegrityReport> {
+  const violations: IntegrityViolation[] = [];
+
+  const enrollments = await db.experimentEnrollment.findMany({ where: { experimentId: exp.id } });
+  const responses = await db.providerResponse.findMany({ where: { experimentId: exp.id } });
+  const consents = await db.experimentConsent.findMany({ where: { experimentId: exp.id } });
+  const events = await db.experimentEvent.findMany({ where: { experimentId: exp.id }, orderBy: { timestamp: "asc" } });
+
+  // Load design for cell validation
+  let validCellIds = new Set<string>();
+  try {
+    const design = loadDesignStrict(exp.treatmentDesignJson);
+    validCellIds = new Set(generateTreatmentCells(design).map((c) => c.id));
+  } catch { /* design missing — flagged below */ }
+
+  // 1. Duplicate participant (same accountEmail enrolled twice — should be prevented by unique constraint)
+  const emailCounts = new Map<string, number>();
+  for (const e of enrollments) emailCounts.set(e.accountEmail, (emailCounts.get(e.accountEmail) ?? 0) + 1);
+  for (const [email, count] of emailCounts) {
+    if (count > 1) violations.push({ type: "duplicate_participant", detail: `${email} enrolled ${count} times`, severity: "critical" });
+  }
+
+  // 2. Missing treatment cell
+  for (const e of enrollments) {
+    if (!e.assignedCellId) violations.push({ type: "missing_treatment_cell", detail: `enrollment ${e.id}`, severity: "critical" });
+  }
+
+  // 3. Unknown treatment cell
+  for (const e of enrollments) {
+    if (e.assignedCellId && validCellIds.size > 0 && !validCellIds.has(e.assignedCellId)) {
+      violations.push({ type: "unknown_treatment_cell", detail: `enrollment ${e.id}: ${e.assignedCellId}`, severity: "critical" });
+    }
+  }
+
+  // 4. Missing consent (offer created without valid, non-withdrawn consent)
+  const validConsents = new Set(consents.filter((c) => !c.withdrawnAt).map((c) => c.enrollmentId));
+  for (const r of responses) {
+    if (!validConsents.has(r.enrollmentId)) {
+      violations.push({ type: "missing_consent", detail: `response ${r.id} has no valid consent`, severity: "critical" });
+    }
+  }
+
+  // 5. Missing provider verification (offer created to unverified provider)
+  const enrollmentMap = new Map(enrollments.map((e) => [e.id, e]));
+  for (const r of responses) {
+    const en = enrollmentMap.get(r.enrollmentId);
+    if (en && en.providerVerified !== "operator_verified" && en.providerVerified !== "externally_verified") {
+      violations.push({ type: "unverified_provider_offer", detail: `response ${r.id} to unverified provider`, severity: "critical" });
+    }
+  }
+
+  // 6. Offer after withdrawal
+  for (const r of responses) {
+    const en = enrollmentMap.get(r.enrollmentId);
+    if (en && en.status === "withdrawn") {
+      // Check if offer was created AFTER withdrawal
+      if (en.withdrawnAt && r.offerPresentedAt && new Date(r.offerPresentedAt) > new Date(en.withdrawnAt)) {
+        violations.push({ type: "offer_after_withdrawal", detail: `response ${r.id} created after withdrawal`, severity: "critical" });
+      }
+    }
+  }
+
+  // 7. W3-R without required event sequence (PROVIDER_ACCEPTED must follow PROVIDER_VIEWED)
+  const responseStates = new Map(responses.map((r) => [r.id, r.state]));
+  for (const r of responses) {
+    if (r.evidenceTier === "W3-R" && r.state !== "PROVIDER_ACCEPTED" && r.state !== "TRIP_STARTED" && r.state !== "TRIP_COMPLETED" && r.state !== "TRIP_CANCELLED") {
+      violations.push({ type: "w3r_invalid_sequence", detail: `response ${r.id} has W3-R but state=${r.state}`, severity: "critical" });
+    }
+  }
+
+  // 8. W4-R without W3-R (TRIP_COMPLETED must follow PROVIDER_ACCEPTED)
+  for (const r of responses) {
+    if (r.evidenceTier === "W4-R" && r.state === "TRIP_COMPLETED") {
+      // Verify there was a prior PROVIDER_ACCEPTED — check event log
+      const acceptEvent = events.find((e) => e.offerId === r.id && e.toState === "PROVIDER_ACCEPTED");
+      if (!acceptEvent) {
+        violations.push({ type: "w4r_without_w3r", detail: `response ${r.id} has W4-R without prior W3-R`, severity: "critical" });
+      }
+    }
+  }
+
+  // 9. Unexpected W3-M or W4-M (critical integrity event — research flow cannot produce these)
+  const w3m = responses.filter((r) => r.evidenceTier === "W3-M").length;
+  const w4m = responses.filter((r) => r.evidenceTier === "W4-M").length;
+  if (w3m > 0) violations.push({ type: "unexpected_w3m", detail: `${w3m} W3-M evidence in research flow`, severity: "critical" });
+  if (w4m > 0) violations.push({ type: "unexpected_w4m", detail: `${w4m} W4-M evidence in research flow`, severity: "critical" });
+
+  // 10. Modified preregistration hash
+  let hashValid = false;
+  try {
+    const design = loadDesignStrict(exp.treatmentDesignJson);
+    hashValid = verifyDesignHash(design, exp.preregistrationHash);
+  } catch { hashValid = false; }
+  if (!hashValid) {
+    violations.push({ type: "modified_preregistration_hash", detail: "design does not match persisted hash", severity: "critical" });
+  }
+
+  // 11. Hash chain integrity
+  let hashChainValid = true;
+  let previousHash: string | null = null;
+  for (const e of events) {
+    if (e.previousEventHash !== previousHash) { hashChainValid = false; break; }
+    previousHash = e.eventHash;
+  }
+  if (!hashChainValid) {
+    violations.push({ type: "hash_chain_broken", detail: "event log hash chain is broken", severity: "critical" });
+  }
+
+  const counts = {
+    enrollments: enrollments.length,
+    responses: responses.length,
+    w3r: responses.filter((r) => r.evidenceTier === "W3-R").length,
+    w4r: responses.filter((r) => r.evidenceTier === "W4-R").length,
+    w3m,
+    w4m,
+    withdrawn: enrollments.filter((e) => e.status === "withdrawn").length,
+  };
+
+  return { violations, counts, hashChainValid };
+}
+
+// Section 14: Analysis dataset export (operator-only, fails closed on violations)
+async function buildAnalysisDataset(exp: any) {
+  const enrollments = await db.experimentEnrollment.findMany({ where: { experimentId: exp.id } });
+  const responses = await db.providerResponse.findMany({ where: { experimentId: exp.id } });
+  const consents = await db.experimentConsent.findMany({ where: { experimentId: exp.id } });
+
+  const enrollmentMap = new Map(enrollments.map((e) => [e.id, e]));
+  const consentByEnrollment = new Map(consents.map((c) => [c.enrollmentId, c]));
+
+  return responses.map((r) => {
+    const en = enrollmentMap.get(r.enrollmentId);
+    const con = consentByEnrollment.get(r.enrollmentId);
+    return {
+      experimentId: exp.id,
+      experimentVersion: exp.consentVersion,
+      preregistrationHash: exp.preregistrationHash?.substring(0, 16) + "…",
+      participantPseudonym: r.participantId.substring(0, 12) + "…",
+      providerVerificationLevel: en?.providerVerified ?? "unknown",
+      treatmentCellId: en?.assignedCellId,
+      compensation: r.compensation,
+      detourKm: r.detourKm,
+      extraTimeMin: r.extraTimeMin,
+      advanceNoticeMin: r.advanceNoticeMin,
+      offerPresentedAt: r.offerPresentedAt,
+      providerViewedAt: r.providerViewedAt,
+      decisionAt: r.decisionAt,
+      offerExpiresAt: r.offerExpiresAt,
+      state: r.state,
+      decision: r.decision,
+      evidenceTier: r.evidenceTier,
+      w3rTimestamp: r.evidenceTier === "W3-R" ? r.decisionAt : null,
+      w4rTimestamp: r.evidenceTier === "W4-R" ? r.timestamp : null,
+      completionEvidenceLevel: r.completionEvidenceLevel,
+      withdrawalStatus: en?.status ?? "unknown",
+      consentVersion: con?.consentVersion,
+      consentedAt: con?.consentedAt,
+    };
+  });
 }
