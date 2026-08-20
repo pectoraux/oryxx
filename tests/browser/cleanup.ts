@@ -8,7 +8,6 @@ const db = new PrismaClient({
     db: { url: process.env.DIRECT_URL ?? process.env.DATABASE_URL },
   },
 });
-
 async function main() {
   const adminEmail = process.env.TEST_ADMIN_EMAIL || "e2e-admin@oryxx.test";
   const participantEmail = process.env.TEST_PARTICIPANT_EMAIL || "e2e-participant@oryxx.test";

@@ -10,11 +10,11 @@
 // Idempotent — safe to re-run.
 
 import { PrismaClient } from "@prisma/client";
-import { hashPassword } from "../src/lib/auth/password";
+import { hashPassword } from "../../src/lib/auth/password";
 import {
   computePreregistrationHash,
   type PreregisteredDesign,
-} from "../src/lib/oryxx/real/evidence/pilot";
+} from "../../src/lib/oryxx/real/evidence/pilot";
 
 const db = new PrismaClient({
   datasources: {

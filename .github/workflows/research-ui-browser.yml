@@ -106,7 +106,12 @@ jobs:
           PGPASSWORD=$POSTGRES_PASSWORD psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "\dt"
 
       - name: Create test data (admin, participant, experiment)
-        run: bun run tests/browser/setup.ts
+        run: |
+          bun run tests/browser/setup.ts 2>&1 | tee /tmp/setup-output.txt
+          # Extract experiment ID and write to GITHUB_ENV
+          EXP_ID=$(grep "TEST_EXPERIMENT_ID=" /tmp/setup-output.txt | head -1 | sed 's/.*=//')
+          echo "TEST_EXPERIMENT_ID=$EXP_ID" >> $GITHUB_ENV
+          echo "Experiment ID: $EXP_ID"
 
       - name: Start Next.js dev server
         run: |
@@ -135,13 +140,18 @@ jobs:
 
       - name: Run browser tests
         run: |
-          # Get the experiment ID from setup output and export it
-          export TEST_EXPERIMENT_ID=$(bun run tests/browser/setup.ts 2>&1 | grep "TEST_EXPERIMENT_ID=" | head -1 | sed 's/.*=//')
           echo "Using TEST_EXPERIMENT_ID=$TEST_EXPERIMENT_ID"
           bunx playwright test --reporter=list
         env:
           DATABASE_URL: ${{ env.DATABASE_URL }}
           DIRECT_URL: ${{ env.DIRECT_URL }}
+          TEST_EXPERIMENT_ID: ${{ env.TEST_EXPERIMENT_ID }}
+          TEST_ADMIN_EMAIL: ${{ env.TEST_ADMIN_EMAIL }}
+          TEST_ADMIN_PASSWORD: ${{ env.TEST_ADMIN_PASSWORD }}
+          TEST_PARTICIPANT_EMAIL: ${{ env.TEST_PARTICIPANT_EMAIL }}
+          TEST_PARTICIPANT_PASSWORD: ${{ env.TEST_PARTICIPANT_PASSWORD }}
+          TEST_PARTICIPANT_B_EMAIL: ${{ env.TEST_PARTICIPANT_B_EMAIL }}
+          TEST_PARTICIPANT_B_PASSWORD: ${{ env.TEST_PARTICIPANT_B_PASSWORD }}
 
       - name: Cleanup test data
         if: always()
