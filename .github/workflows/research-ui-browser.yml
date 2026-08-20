@@ -29,6 +29,8 @@ on:
       - "src/app/api/oryxx/willingness/**"
       - "tests/browser/**"
       - "playwright.config.ts"
+      - "package.json"
+      - "bun.lock"
       - ".github/workflows/research-ui-browser.yml"
   pull_request:
     branches: [main]
@@ -38,7 +40,10 @@ on:
       - "src/app/api/oryxx/willingness/**"
       - "tests/browser/**"
       - "playwright.config.ts"
+      - "package.json"
+      - "bun.lock"
       - ".github/workflows/research-ui-browser.yml"
+  workflow_dispatch: # Allow manual triggering
 
 concurrency:
   group: research-ui-browser-${{ github.ref }}
