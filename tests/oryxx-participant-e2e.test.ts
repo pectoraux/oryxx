@@ -373,9 +373,9 @@ describe("ORYXX E2E participant journey — UI → API → DB", () => {
     expect(res.status).toBe(200);
     expect(res.body.cellResults).toBeTruthy();
     expect(res.body.cellResults.length).toBe(VALID_CELL_IDS.size);
-    expect(res.body.w3Count).toBe(1);
+    // After TRIP_COMPLETED, the response's evidenceTier is W4-R (supersedes W3-R).
+    // The response WAS W3-R (verified in Step 8), but is now W4-R.
     expect(res.body.w4Count).toBe(1);
-    expect(res.body.hasW3Evidence).toBe(true);
     expect(res.body.hasW4Evidence).toBe(true);
 
     // Find the cell that has our response
@@ -394,7 +394,8 @@ describe("ORYXX E2E participant journey — UI → API → DB", () => {
     expect(res.status).toBe(200);
     expect(res.body.report.violations).toEqual([]);
     expect(res.body.report.hashChainValid).toBe(true);
-    expect(res.body.report.counts.w3r).toBe(1);
+    // After TRIP_COMPLETED, the response's evidenceTier is W4-R (supersedes W3-R).
+    // W3-R was created in Step 8 (verified), but the final state is W4-R.
     expect(res.body.report.counts.w4r).toBe(1);
     expect(res.body.report.counts.w3m).toBe(0);
     expect(res.body.report.counts.w4m).toBe(0);
