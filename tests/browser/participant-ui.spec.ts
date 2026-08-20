@@ -36,7 +36,7 @@
 //   - A test admin + test participant account created via Prisma seed
 //   - A test experiment created, preregistered, and activated
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "e2e-admin@oryxx.test";
 const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || "E2E-Admin-Pw-123!";
@@ -104,6 +104,43 @@ async function waitForRecovery(page: Page) {
   ).first().waitFor({ state: "visible", timeout: 15000 });
 }
 
+// Create a standalone API context authenticated as admin.
+// Used for admin-only API calls (verify_provider, pause, etc.) that
+// cannot use the participant's browser session.
+async function createAdminContext(): Promise<APIRequestContext> {
+  const ctx = await test.request.newContext();
+  // Get CSRF token
+  const csrfRes = await ctx.get("/api/auth/csrf");
+  const csrf = (await csrfRes.json()).csrfToken;
+  // Sign in as admin
+  await ctx.post("/api/auth/callback/credentials", {
+    multipart: {
+      email: ADMIN_EMAIL,
+      password: ADMIN_PASSWORD,
+      csrfToken: csrf,
+      redirect: "false",
+      json: "true",
+    },
+  });
+  return ctx;
+}
+
+// Make an admin-only API call with a standalone authenticated context.
+async function adminApiCall(body: any): Promise<{ status: number; body: any }> {
+  const ctx = await createAdminContext();
+  try {
+    const res = await ctx.post("/api/oryxx/willingness/experiment", {
+      headers: { "Content-Type": "application/json" },
+      data: body,
+    });
+    let parsed: any;
+    try { parsed = await res.json(); } catch { parsed = null; }
+    return { status: res.status(), body: parsed };
+  } finally {
+    await ctx.dispose();
+  }
+}
+
 test.describe("Provider Participant UI — Browser E2E", () => {
   test("Step 1-6: Participant signs in, opens UI, enrolls", async ({ page }) => {
     await signIn(page, PARTICIPANT_EMAIL, PARTICIPANT_PASSWORD);
@@ -152,8 +189,8 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     const verifyVisible = await verificationPending.isVisible({ timeout: 5000 }).catch(() => false);
     expect(consentVisible || verifyVisible).toBeTruthy();
 
-    // Operator verifies participant via API (admin action — not a UI step for the participant)
-    // Get the participant's enrollment ID
+    // Operator verifies participant via admin API (separate authenticated context)
+    // Get the participant's enrollment ID via the participant's session
     const enrollRes = await page.request.post("/api/oryxx/willingness/experiment", {
       headers: { "Content-Type": "application/json" },
       data: { mode: "get_enrollment", experimentId: EXPERIMENT_ID },
@@ -163,12 +200,11 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     expect(enrollData.enrolled).toBe(true);
     const enrollmentId = enrollData.enrollment.id;
 
-    // Admin verifies the provider
-    const verifyRes = await page.request.post("/api/oryxx/willingness/experiment", {
-      headers: { "Content-Type": "application/json" },
-      data: { mode: "verify_provider", enrollmentId, providerType: "taxi", reference: "browser-e2e" },
-    });
-    expect(verifyRes.status()).toBe(200);
+    // Admin verifies the provider (uses standalone admin context, not
+    // the participant's browser session, because verify_provider requires
+    // admin role).
+    const verifyRes = await adminApiCall({ mode: "verify_provider", enrollmentId, providerType: "taxi", reference: "browser-e2e" });
+    expect(verifyRes.status).toBe(200);
   });
 
   test("Step 10-13: Create offer, verify state transitions, ACCEPT", async ({ page }) => {
@@ -212,7 +248,9 @@ test.describe("Provider Participant UI — Browser E2E", () => {
     // Sign in first (API calls need the session cookie)
     await signIn(page, PARTICIPANT_EMAIL, PARTICIPANT_PASSWORD);
 
-    // Verify W3-R exists via results API (uses page.request to share session)
+    // Verify W3-R exists via results API (uses admin context since results
+    // endpoint requires authentication but not admin role — the participant
+    // session is sufficient)
     const resultsRes = await page.request.get(`/api/oryxx/willingness/results?experimentId=${EXPERIMENT_ID}`);
     expect(resultsRes.status()).toBe(200);
     const resultsData = await resultsRes.json();
