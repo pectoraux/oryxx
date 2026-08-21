@@ -200,6 +200,21 @@ jobs:
           DATABASE_URL: ${{ env.DATABASE_URL }}
           DIRECT_URL: ${{ env.DIRECT_URL }}
 
+      # ─── MARKETPLACE INTEGRITY TESTS (6 defect fixes) ──────────────────
+      # Tests the 6 transaction-integrity defects:
+      # 1. Provider acceptance semantics (customer vs provider separation)
+      # 2. Completion verification gates completion (verified=false → no completion)
+      # 3. Payment must precede execution (CAPTURED PaymentIntent required)
+      # 4. MoneyAccount uniqueness (100 concurrent → exactly 1 account)
+      # 5. Supply reservation atomic (100 concurrent → exactly 1 reservation)
+      # 6. Offer expiry enforced server-side (expired offer → 400, EXPIRED)
+      # Also: clear_market excludes RESERVED supply, failed ops no partial mutation
+      - name: Marketplace integrity tests (6 defect fixes, concurrency)
+        run: bun test tests/oryxx-marketplace-integrity.test.ts --timeout 600000
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          DIRECT_URL: ${{ env.DIRECT_URL }}
+
       # ─── LINT ───────────────────────────────────────────────────────
       - name: Lint
         run: bun run lint

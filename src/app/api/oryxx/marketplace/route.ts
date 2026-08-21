@@ -1043,7 +1043,9 @@ export async function POST(req: Request) {
     const dbSupplies = await db.transportationSupply.findMany({
       where: {
         environment: ENV,
-        status: { in: ["AVAILABLE", "RESERVED", "COMMITTED"] },
+        // DEFECT 5 FIX: Only AVAILABLE supply is fresh. RESERVED/COMMITTED/
+        // EXPIRED/OFFLINE supply must NOT be considered for new opportunities.
+        status: "AVAILABLE",
       },
       take: 100,
     });
@@ -1293,6 +1295,24 @@ export async function POST(req: Request) {
     });
     if (!demand) return NextResponse.json({ error: "Demand not found." }, { status: 404 });
     if (!assertOwnership(demand, email)) return ownershipError(email);
+
+    // DEFECT 6 FIX: Offer expiry enforcement. Acceptance requires:
+    //   status === PENDING
+    //   AND expiresAt > now
+    // If expired, transition to EXPIRED and reject acceptance.
+    const now = new Date();
+    if (offer.expiresAt && new Date(offer.expiresAt) < now) {
+      await db.marketplaceOffer.update({
+        where: { id: offer.id },
+        data: { status: "EXPIRED" },
+      });
+      return NextResponse.json({
+        error: "Offer has expired. Acceptance rejected.",
+        offerId: offer.id,
+        expiresAt: offer.expiresAt,
+      }, { status: 400 });
+    }
+
     if (offer.status !== "PENDING") {
       return NextResponse.json(
         { error: `Offer is in status ${offer.status}; only PENDING offers can be buyer-accepted.` },
@@ -1390,11 +1410,16 @@ export async function POST(req: Request) {
         },
       });
 
-      // Supply lifecycle: AVAILABLE → RESERVED
-      await tx.transportationSupply.update({
-        where: { id: acceptedOffer.supplyId },
+      // DEFECT 5 FIX: Atomic supply reservation. Use updateMany with a
+      // status condition to ensure ONLY AVAILABLE supply can be reserved.
+      // If another request reserved it first, count === 0 → conflict.
+      const supplyUpdate = await tx.transportationSupply.updateMany({
+        where: { id: acceptedOffer.supplyId, status: "AVAILABLE" },
         data: { status: "RESERVED" },
       });
+      if (supplyUpdate.count === 0) {
+        throw new Error("SUPPLY_ALREADY_RESERVED");
+      }
 
       // Opportunity lifecycle: BUYER_ACCEPTED → ACCEPTED (both sides)
       await tx.transportationOpportunity.update({
@@ -1412,7 +1437,18 @@ export async function POST(req: Request) {
       await logEvent(tx, "supply-reserved", "supply", acceptedOffer.supplyId, {});
 
       return { offer: acceptedOffer, agreement };
+    }).catch((err: any) => {
+      if (err?.message === "SUPPLY_ALREADY_RESERVED") {
+        return { conflict: true as const };
+      }
+      throw err;
     });
+
+    if ("conflict" in result && result.conflict) {
+      return NextResponse.json({
+        error: "Supply was already reserved by another request. No agreement created.",
+      }, { status: 409 });
+    }
 
     return NextResponse.json({
       offer: result.offer,
@@ -1709,6 +1745,18 @@ export async function POST(req: Request) {
     if (agreement.status !== "ACTIVE") {
       return NextResponse.json(
         { error: `Agreement is ${agreement.status}; execution requires ACTIVE agreement (both sides accepted).` },
+        { status: 400 },
+      );
+    }
+
+    // DEFECT 3 FIX: Payment must precede execution. Verify a CAPTURED
+    // PaymentIntent exists for this agreement before creating an execution.
+    const capturedPayment = await db.paymentIntent.findFirst({
+      where: { agreementId: agreement.id, status: "CAPTURED" },
+    });
+    if (!capturedPayment) {
+      return NextResponse.json(
+        { error: "No CAPTURED payment for this agreement. Execution requires captured payment." },
         { status: 400 },
       );
     }
@@ -2028,7 +2076,9 @@ export async function POST(req: Request) {
 
     // Call the provider adapter to independently verify completion. The
     // provider CANNOT self-report — verifyCompletion must return verified=true
-    // for us to record a Settlement.
+    // for us to record a Settlement. If verification fails, NO completion,
+    // NO settlement, NO demand COMPLETED. The transaction must not partially
+    // mutate state.
     const provider = providerRegistry.get(execution.providerId);
     let verified = false;
     let providerCompletedAt: string | undefined;
@@ -2036,6 +2086,16 @@ export async function POST(req: Request) {
       const verifyResult = await provider.verifyCompletion(providerExecutionId);
       verified = verifyResult.verified;
       providerCompletedAt = verifyResult.completedAt;
+    }
+
+    // DEFECT 2 FIX: If provider verification failed, block completion entirely.
+    // No partial state mutation. Return failure without touching DB state.
+    if (!verified) {
+      return NextResponse.json({
+        error: "Provider completion verification failed. No completion, no settlement, no demand completion.",
+        executionId: execution.id,
+        verified: false,
+      }, { status: 400 });
     }
 
     // Load the agreement so the Settlement amount can record the supplier
