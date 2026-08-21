@@ -215,6 +215,18 @@ jobs:
           DATABASE_URL: ${{ env.DATABASE_URL }}
           DIRECT_URL: ${{ env.DIRECT_URL }}
 
+      # ─── PROVIDER IDEMPOTENCY TESTS ───────────────────────────────────
+      # Tests external provider side-effect idempotency:
+      # - 100 concurrent provider_accept_offer → 1 logical acceptance, 0 HTTP 500
+      # - 100 retries of same claim → same result, no duplicate provider call
+      # - Claim persists with providerReference across retries
+      # - Concurrent buyer_accept + provider_accept → no invalid state
+      - name: Provider idempotency tests (claim before external call)
+        run: bun test tests/oryxx-marketplace-idempotency.test.ts --timeout 600000
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          DIRECT_URL: ${{ env.DIRECT_URL }}
+
       # ─── LINT ───────────────────────────────────────────────────────
       - name: Lint
         run: bun run lint

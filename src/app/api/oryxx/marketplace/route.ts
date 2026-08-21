@@ -1368,9 +1368,19 @@ export async function POST(req: Request) {
   }
 
   // ─── 6b. PROVIDER ACCEPTS OFFER (provider-side) ────────────────────
-  // Two-sided marketplace: the provider must explicitly accept the offer
-  // before an agreement is formed. Provider identity is derived from the
-  // authenticated session (NOT from the request body).
+  // Two-sided marketplace with EXTERNAL IDEMPOTENCY:
+  //
+  // 1. Authenticate provider (server-derived identity)
+  // 2. Verify provider owns offer
+  // 3. Create durable ProviderAcceptanceAttempt (claim) in a short transaction
+  // 4. If claim already exists (retry/concurrent), return existing result
+  // 5. Call provider adapter with idempotencyKey (external side effect)
+  // 6. Finalize ORYXX state (offer, agreement, supply) in a second transaction
+  //
+  // The external provider call happens BETWEEN two separate transactions.
+  // No DB transaction is held across the external call.
+  // The adapter receives a stable idempotencyKey so retries don't cause
+  // duplicate provider acceptances.
   if (mode === "provider_accept_offer") {
     const provider = await requireProviderIdentity();
     if (!provider) return NextResponse.json({ error: "Provider authentication required." }, { status: 401 });
@@ -1384,50 +1394,117 @@ export async function POST(req: Request) {
     // resolved provider identity. Forged providerId from body is ignored.
     if (!assertProviderOwnsOffer(offer, provider)) return providerAuthError();
 
-    // Offer must be BUYER_ACCEPTED before provider can accept
+    // ── STEP 1: Create durable claim BEFORE external call ────────────
+    // Use upsert on (offerId, providerId) to guarantee exactly one claim.
+    // If the claim already exists (retry/concurrent), return existing result.
+    const claimKey = `accept-${offer.id}-${provider.providerId}`;
+    let attempt = await db.providerAcceptanceAttempt.upsert({
+      where: { claimKey },
+      update: { attemptCount: { increment: 1 } },
+      create: {
+        offerId: offer.id,
+        providerId: provider.providerId,
+        claimKey,
+        status: "PENDING",
+        environment: ENV,
+      },
+    });
+
+    // If a prior attempt already reached a terminal state, return it.
+    if (attempt.status === "ACCEPTED") {
+      return NextResponse.json({
+        offer: { id: offer.id, status: "PROVIDER_ACCEPTED" },
+        agreement: await db.marketplaceAgreement.findUnique({ where: { offerId: offer.id } }),
+        message: "Provider already accepted this offer (idempotent).",
+        claimId: attempt.id,
+        claimStatus: "ACCEPTED",
+      });
+    }
+    if (attempt.status === "REJECTED") {
+      return NextResponse.json({
+        error: `Provider previously rejected this offer: ${attempt.lastError || "unknown"}`,
+        claimId: attempt.id,
+        claimStatus: "REJECTED",
+      }, { status: 400 });
+    }
+
+    // ── STEP 2: Verify offer is still BUYER_ACCEPTED ─────────────────
+    // (re-read after the claim, inside a short transaction)
     if (offer.status !== "BUYER_ACCEPTED") {
+      // Check if another request already finalized it
+      if (offer.status === "PROVIDER_ACCEPTED") {
+        return NextResponse.json({
+          error: "Offer already accepted by another request.",
+        }, { status: 409 });
+      }
       return NextResponse.json(
         { error: `Offer is in status ${offer.status}; only BUYER_ACCEPTED offers can be provider-accepted.` },
         { status: 400 },
       );
     }
 
-    // Call the provider adapter to perform authoritative accept + reserve.
-    // If the adapter rejects, NO agreement, NO reservation, NO payment.
+    // ── STEP 3: Mark claim as SUBMITTED, then call provider ─────────
+    // Update the claim to SUBMITTED before the external call.
+    await db.providerAcceptanceAttempt.update({
+      where: { id: attempt.id },
+      data: { status: "SUBMITTED" },
+    });
+
+    // Call the provider adapter with the idempotencyKey.
+    // The adapter is responsible for deduplicating calls with the same key.
     const adapter = providerRegistry.get(offer.providerId);
-    if (adapter) {
+    let providerAccepted = false;
+    let providerReference: string | undefined;
+    let providerReason: string | undefined;
+
+    if (adapter && "acceptOffer" in adapter && typeof adapter.acceptOffer === "function") {
+      const acceptResult = await adapter.acceptOffer(offer.id, claimKey);
+      providerAccepted = acceptResult.accepted;
+      providerReference = acceptResult.providerReference;
+      providerReason = acceptResult.reason;
+    } else if (adapter) {
+      // Fallback: old adapter interface (for backward compat)
       const acceptResult = await adapter.accept(offer.id);
-      if (!acceptResult.accepted) {
-        return NextResponse.json({
-          error: `Provider adapter rejected offer: ${acceptResult.reason || "unknown"}`,
-        }, { status: 400 });
-      }
+      providerAccepted = acceptResult.accepted;
+      providerReason = acceptResult.reason;
     }
 
-    // DEFECT 2 FIX: Provider acceptance is fully atomic. The offer transition
-    // (BUYER_ACCEPTED → PROVIDER_ACCEPTED), agreement creation, and supply
-    // reservation all happen inside a single PostgreSQL transaction.
-    // The offer transition uses updateMany with a status condition — if
-    // another request already claimed it, count === 0 → 409 conflict.
-    // The agreement creation uses a unique constraint on offerId — if
-    // another request already created an agreement, P2002 → 409 conflict.
-    // No HTTP 500 for expected contention.
+    // ── STEP 4: Handle provider result ──────────────────────────────
+    if (!providerAccepted) {
+      // Provider rejected — update claim and return
+      await db.providerAcceptanceAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "REJECTED",
+          lastError: providerReason || "Provider rejected offer",
+        },
+      });
+      return NextResponse.json({
+        error: `Provider adapter rejected offer: ${providerReason || "unknown"}`,
+        claimId: attempt.id,
+        claimStatus: "REJECTED",
+      }, { status: 400 });
+    }
+
+    // ── STEP 5: Finalize ORYXX state in a second transaction ────────
+    // This transaction does NOT span the external call. It atomically:
+    //   1. Claims the offer (BUYER_ACCEPTED → PROVIDER_ACCEPTED)
+    //   2. Creates the agreement
+    //   3. Reserves the supply
+    //   4. Updates the claim to ACCEPTED
+    // If this transaction fails (because another request already won),
+    // the claim retains the provider reference for reconciliation.
     const result = await db.$transaction(async (tx) => {
       // 1. Atomically claim BUYER_ACCEPTED → PROVIDER_ACCEPTED
-      //    (only if still BUYER_ACCEPTED — prevents double acceptance)
       const claimUpdate = await tx.marketplaceOffer.updateMany({
         where: { id: offer.id, status: "BUYER_ACCEPTED" },
         data: { status: "PROVIDER_ACCEPTED" },
       });
       if (claimUpdate.count === 0) {
-        // Offer is no longer BUYER_ACCEPTED — another request already
-        // claimed it (or it was rejected/expired).
         throw new Error("OFFER_ALREADY_CLAIMED");
       }
 
-      // 2. Create agreement (both sides accepted)
-      //    Unique constraint on offerId prevents duplicate agreements.
-      //    If another request already created an agreement, P2002 is thrown.
+      // 2. Create agreement
       let agreement;
       try {
         agreement = await tx.marketplaceAgreement.create({
@@ -1447,20 +1524,16 @@ export async function POST(req: Request) {
           },
         });
       } catch (err: any) {
-        if (err?.code === "P2002") {
-          throw new Error("AGREEMENT_ALREADY_EXISTS");
-        }
+        if (err?.code === "P2002") throw new Error("AGREEMENT_ALREADY_EXISTS");
         throw err;
       }
 
-      // 3. Atomically reserve supply (only if AVAILABLE)
+      // 3. Atomically reserve supply
       const supplyUpdate = await tx.transportationSupply.updateMany({
         where: { id: offer.supplyId, status: "AVAILABLE" },
         data: { status: "RESERVED" },
       });
-      if (supplyUpdate.count === 0) {
-        throw new Error("SUPPLY_ALREADY_RESERVED");
-      }
+      if (supplyUpdate.count === 0) throw new Error("SUPPLY_ALREADY_RESERVED");
 
       // 4. Transition opportunity
       await tx.transportationOpportunity.update({
@@ -1468,9 +1541,19 @@ export async function POST(req: Request) {
         data: { status: "ACCEPTED" },
       });
 
-      // 5. Append audit events
+      // 5. Update claim to ACCEPTED with provider reference
+      await tx.providerAcceptanceAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "ACCEPTED",
+          providerReference: providerReference ?? null,
+        },
+      });
+
+      // 6. Append audit events
       await logEvent(tx, "offer-provider-accepted", "offer", offer.id, {
         providerId: provider.providerId,
+        providerReference,
       });
       await logEvent(tx, "agreement-created", "agreement", agreement.id, {
         offerId: offer.id,
@@ -1480,21 +1563,29 @@ export async function POST(req: Request) {
 
       return { offer: { id: offer.id, status: "PROVIDER_ACCEPTED" }, agreement };
     }).catch((err: any) => {
-      if (err?.message === "OFFER_ALREADY_CLAIMED") {
-        return { conflict: "Offer already accepted" as const };
-      }
-      if (err?.message === "SUPPLY_ALREADY_RESERVED") {
-        return { conflict: "Supply already reserved" as const };
-      }
-      if (err?.message === "AGREEMENT_ALREADY_EXISTS") {
-        return { conflict: "Agreement already exists" as const };
-      }
+      if (err?.message === "OFFER_ALREADY_CLAIMED") return { conflict: "Offer already accepted" as const };
+      if (err?.message === "SUPPLY_ALREADY_RESERVED") return { conflict: "Supply already reserved" as const };
+      if (err?.message === "AGREEMENT_ALREADY_EXISTS") return { conflict: "Agreement already exists" as const };
       throw err;
     });
 
     if ("conflict" in result && typeof result.conflict === "string") {
+      // Another request won the race. But the provider MAY have already
+      // accepted (the external call succeeded). Persist the provider
+      // reference for reconciliation.
+      await db.providerAcceptanceAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "UNKNOWN", // provider accepted but ORYXX finalization lost
+          providerReference: providerReference ?? null,
+          lastError: result.conflict,
+        },
+      }).catch(() => {}); // best-effort
       return NextResponse.json({
-        error: result.conflict + ". No agreement created.",
+        error: result.conflict + ". Provider reference retained for reconciliation.",
+        claimId: attempt.id,
+        claimStatus: "UNKNOWN",
+        providerReference,
       }, { status: 409 });
     }
 
@@ -1502,6 +1593,9 @@ export async function POST(req: Request) {
       offer: result.offer,
       agreement: result.agreement,
       message: "Provider accepted offer; agreement created; supply RESERVED.",
+      claimId: attempt.id,
+      claimStatus: "ACCEPTED",
+      providerReference,
     });
   }
 

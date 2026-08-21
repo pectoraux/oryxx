@@ -76,8 +76,9 @@ export interface TransportationProviderAdapter {
   // Reservation
   reserve(request: ReserveRequest): Promise<ReserveResult | null>;
 
-  // Accept / cancel
+  // Accept / cancel — idempotent with idempotencyKey
   accept(opportunityId: string): Promise<{ accepted: boolean; reason?: string }>;
+  acceptOffer(offerId: string, idempotencyKey: string): Promise<{ accepted: boolean; providerReference?: string; reason?: string }>;
   cancel(opportunityId: string): Promise<{ cancelled: boolean; reason?: string }>;
 
   // Execution lifecycle

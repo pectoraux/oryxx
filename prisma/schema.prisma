@@ -545,3 +545,26 @@ model MarketplaceEvent {
   @@index([environment])
   @@index([timestamp])
 }
+
+// Provider acceptance claim — durable idempotency record for external
+// provider side effects. Created BEFORE the provider adapter is called.
+// Guarantees at-most-once logical provider acceptance per offer.
+model ProviderAcceptanceAttempt {
+  id              String   @id @default(cuid())
+  offerId         String
+  providerId      String
+  claimKey        String   @unique // stable idempotency key (derived from offerId + providerId)
+  status          String   @default("PENDING") // PENDING | SUBMITTED | ACCEPTED | REJECTED | UNKNOWN | FAILED
+  providerReference String? // provider's own reference/ID for this acceptance
+  attemptCount    Int      @default(0)
+  lastError       String?
+  environment     String   @default("SANDBOX")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([offerId, providerId]) // one logical acceptance per offer
+  @@index([offerId])
+  @@index([providerId])
+  @@index([status])
+  @@index([environment])
+}

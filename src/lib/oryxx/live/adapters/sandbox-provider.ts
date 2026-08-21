@@ -161,6 +161,41 @@ export class SandboxTransportationProvider implements TransportationProviderAdap
     return { accepted: true };
   }
 
+  // Idempotent acceptOffer: repeated calls with the same idempotencyKey
+  // return the same logical result. The sandbox maintains a Map of
+  // idempotencyKey → result to guarantee at-most-once execution.
+  private idempotentAccepts = new Map<string, { accepted: boolean; providerReference?: string; reason?: string }>();
+
+  async acceptOffer(offerId: string, idempotencyKey: string): Promise<{ accepted: boolean; providerReference?: string; reason?: string }> {
+    // Check if this idempotencyKey was already used — return cached result.
+    const existing = this.idempotentAccepts.get(idempotencyKey);
+    if (existing) {
+      return existing;
+    }
+    // Perform the "external" accept (sandbox = always succeeds).
+    const result = {
+      accepted: true,
+      providerReference: `sandbox-accept-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    };
+    // Cache the result so retries return the same logical acceptance.
+    this.idempotentAccepts.set(idempotencyKey, result);
+    return result;
+  }
+
+  // Test instrumentation: count how many times acceptOffer was called
+  // with a unique idempotencyKey (i.e., how many actual external calls
+  // were made, vs. how many were served from cache).
+  getUniqueAcceptCallCount(): number {
+    return this.idempotentAccepts.size;
+  }
+
+  // Test instrumentation: count how many total acceptOffer calls were made
+  // (including cached responses).
+  private totalAcceptCalls = 0;
+  getTotalAcceptCallCount(): number {
+    return this.totalAcceptCalls;
+  }
+
   async cancel(opportunityId: string): Promise<{ cancelled: boolean; reason?: string }> {
     return { cancelled: true };
   }

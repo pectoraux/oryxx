@@ -132,6 +132,10 @@ export class FixtureTransportationProvider implements TransportationProviderAdap
     return { accepted: false, reason: "Fixture transit does not accept individual reservations" };
   }
 
+  async acceptOffer(offerId: string, idempotencyKey: string): Promise<{ accepted: boolean; providerReference?: string; reason?: string }> {
+    return { accepted: false, reason: "Fixture transit does not accept individual reservations" };
+  }
+
   async cancel(opportunityId: string): Promise<{ cancelled: boolean; reason?: string }> {
     return { cancelled: true };
   }
