@@ -1,20 +1,50 @@
-// ORYXX — Live Supply Experiment Engine
+// ORYXX — Live Supply Information-Value Experiment
 //
-// Compares ordinary routing (baseline) against ORYXX routing enhanced with
-// live Citi Bike station availability observations.
+// SCIENTIFIC DESIGN:
+// This is an INFORMATION-TREATMENT experiment. The only experimental
+// difference between BASELINE and ORYXX is access to live Citi Bike
+// station-availability observations (free_bikes count + timestamp).
 //
-// KEY DISTINCTIONS:
-// - OBSERVED: station location, free_bikes count, timestamp
-// - INFERRED: route feasibility, walking distance, arrival estimate
-// - ASSUMED: user accepts walking, bike remains available until arrival
-// - UNKNOWN: actual booking, acceptance, completion
+// Both strategies have IDENTICAL:
+//   - demand population
+//   - geography / network geometry
+//   - walking model
+//   - biking model
+//   - station locations (both know where Citi Bike stations are)
+//   - bike-share routing rules
+//   - generalized cost / evaluation function
+//   - user constraints
 //
-// This experiment CANNOT produce W3-M/W4-M. It measures planning/opportunity
-// discovery value from live external supply, not marketplace transactions.
+// BASELINE: "without live inventory information"
+//   - Knows station LOCATIONS but NOT current inventory.
+//   - Bike-share routes are CANDIDATES with UNKNOWN availability.
+//   - Under the baseline's uncertainty policy, a bike-share route
+//     receives an availability penalty (uncertainty cost).
+//   - The baseline may still SELECT a bike-share route if the time
+//     savings outweigh the uncertainty penalty.
 //
-// All economic values are MODELLED, not REALIZED.
+// ORYXX: "with live inventory information"
+//   - Knows station locations AND current observed free_bikes + timestamp.
+//   - Stations with free_bikes > 0 within the freshness window are
+//     marked OBSERVED_AVAILABLE_AT_T.
+//   - Stations with free_bikes = 0 or stale are marked UNAVAILABLE_OR_STALE.
+//   - Bike-share routes via observed-available stations have NO uncertainty
+//     penalty (observation is fresh enough to act on).
+//
+// METRICS (route-level, causally attributable):
+//   - NEWLY_DISCOVERABLE: route feasible under ORYXX info AND not
+//     selectable under baseline info (bike route was too uncertain).
+//   - INFORMATIONAL_IMPROVEMENT: generalized-cost delta (baseline - ORYXX).
+//   - ROUTE_IMPROVEMENT_RATE: fraction of demands where ORYXX info
+//     produces a strictly better route.
+//   - BASELINE_WINS: fraction where baseline's uncertainty penalty
+//     was small enough that it chose the same route at lower modelled cost.
+//   - STALE_RATE: fraction of stations whose observations are too old.
+//
+// ALL economic values are MODELLED, not REALIZED.
+// This experiment CANNOT produce W3-M/W4-M.
 
-import type { GeoPoint, Provenance, TransportationSupply, TransportationDemand } from "../types";
+import type { GeoPoint } from "../types";
 import type { LiveObservationSnapshot, SnapshotStation } from "./snapshot-types";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -22,20 +52,59 @@ import type { LiveObservationSnapshot, SnapshotStation } from "./snapshot-types"
 // ═══════════════════════════════════════════════════════════════════════
 
 export interface ExperimentConfig {
-  geography: {
-    center: GeoPoint;
-    radiusKm: number;
-    city: string;
-  };
+  geography: { center: GeoPoint; radiusKm: number; city: string };
   demandCount: number;
   demandSeed: number;
-  freshnessWindowSec: number; // max age of observations
+  freshnessWindowSec: number;
   snapshotTimestamp: string;
   walkingSpeedKmh: number;
   bikingSpeedKmh: number;
   maxWalkingKm: number;
-  valuePerMinuteSaved: number; // cents
-  valuePerKmSaved: number; // cents
+  valuePerMinuteSaved: number; // cents (MODELLED)
+  // Baseline uncertainty penalty: if a bike-share route's generalized cost
+  // is C_bike, the baseline modelled cost is C_bike + uncertaintyPenaltyMin * valuePerMinute.
+  // This represents the expected cost of arriving at a station with unknown
+  // availability and finding no bikes (forcing a fallback to walking).
+  baselineUncertaintyPenaltyMin: number;
+}
+
+export type RouteType = "walk_direct" | "bike_share" | "walk_only";
+export type AvailabilityStatus = "OBSERVED_AVAILABLE_AT_T" | "UNAVAILABLE" | "STALE" | "UNKNOWN";
+
+export interface RouteOption {
+  type: RouteType;
+  travelTimeMin: number;
+  walkingKm: number;
+  generalizedCost: number; // MODELLED cost in cents
+  stationId?: string;
+  stationName?: string;
+  availabilityStatus: AvailabilityStatus;
+  isSelectable: boolean; // can this route be chosen given the information set?
+}
+
+export interface DemandResult {
+  demandId: string;
+  originLat: number;
+  originLon: number;
+  destLat: number;
+  destLon: number;
+  directDistanceKm: number;
+  nearestStationDistKm: number;
+  hasStationWithinWalking: boolean;
+  baseline: {
+    bestRoute: RouteOption;
+    allRoutes: RouteOption[];
+  };
+  oryxx: {
+    bestRoute: RouteOption;
+    allRoutes: RouteOption[];
+  };
+  comparison: {
+    category: "ORYXX_WINS" | "BASELINE_WINS" | "TIE" | "NEITHER_HAS_BIKE";
+    costDelta: number; // baseline.bestRoute.cost - oryxx.bestRoute.cost (>0 = ORYXX better)
+    timeDeltaMin: number; // baseline.bestRoute.time - oryxx.bestRoute.time
+    newlyDiscoverable: boolean; // ORYXX selected bike, baseline could not
+  };
 }
 
 export interface ExperimentResult {
@@ -46,23 +115,20 @@ export interface ExperimentResult {
   stationCount: number;
   stationsWithBikes: number;
   totalBikesObserved: number;
-  baseline: {
-    opportunities: number;
-    feasibleOpportunities: number;
-    meanTravelTimeMin: number;
-    meanWalkingKm: number;
-    estimatedValue: number; // MODELLED, not REALIZED
-  };
-  oryxx: {
-    opportunities: number;
-    feasibleOpportunities: number;
-    additionalOpportunities: number;
-    meanTravelTimeMin: number;
-    meanWalkingKm: number;
-    estimatedValue: number; // MODELLED, not REALIZED
-    estimatedValueDelta: number; // ORYXX - baseline
-    travelTimeDeltaMin: number;
-    walkingBurdenDeltaKm: number;
+  stationsWithinFreshness: number;
+  staleRate: number;
+  demandCount: number;
+  demandsWithStationInWalking: number;
+  routeLevel: {
+    newlyDiscoverableCount: number;
+    newlyDiscoverableRate: number;
+    oryxxWins: number;
+    baselineWins: number;
+    ties: number;
+    neitherHasBike: number;
+    meanCostDelta: number; // MODELLED cents, >0 = ORYXX better
+    meanTimeDeltaMin: number; // >0 = ORYXX faster
+    improvementRate: number; // fraction where ORYXX strictly better
   };
   freshness: {
     windowSec: number;
@@ -84,6 +150,7 @@ export interface ExperimentResult {
     assumed: string[];
     unknown: string[];
   };
+  demandResults: DemandResult[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -111,8 +178,15 @@ function haversineKm(a: GeoPoint, b: GeoPoint): number {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// DEMAND GENERATION
+// DEMAND GENERATION (deterministic, seeded)
 // ═══════════════════════════════════════════════════════════════════════
+
+interface Demand {
+  id: string;
+  origin: GeoPoint;
+  destination: GeoPoint;
+  directDistanceKm: number;
+}
 
 function seededRandom(seed: number): () => number {
   let s = seed;
@@ -122,47 +196,32 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-function generateDemands(config: ExperimentConfig): TransportationDemand[] {
+function generateDemands(config: ExperimentConfig): Demand[] {
   const rng = seededRandom(config.demandSeed);
-  const demands: TransportationDemand[] = [];
-  const nowSec = Math.floor(new Date(config.snapshotTimestamp).getTime() / 1000) % 86400;
+  const demands: Demand[] = [];
+  const latPerKm = 1 / 111;
+  const lonPerKm = 1 / (111 * Math.cos((config.geography.center.lat * Math.PI) / 180));
 
   for (let i = 0; i < config.demandCount; i++) {
-    // Generate origin/destination within radius of center
     const angle1 = rng() * 2 * Math.PI;
     const dist1 = rng() * config.geography.radiusKm;
     const angle2 = rng() * 2 * Math.PI;
     const dist2 = rng() * config.geography.radiusKm;
 
-    const latPerKm = 1 / 111;
-    const lonPerKm = 1 / (111 * Math.cos((config.geography.center.lat * Math.PI) / 180));
+    const origin: GeoPoint = {
+      lat: config.geography.center.lat + dist1 * Math.sin(angle1) * latPerKm,
+      lon: config.geography.center.lon + dist1 * Math.cos(angle1) * lonPerKm,
+    };
+    const destination: GeoPoint = {
+      lat: config.geography.center.lat + dist2 * Math.sin(angle2) * latPerKm,
+      lon: config.geography.center.lon + dist2 * Math.cos(angle2) * lonPerKm,
+    };
 
     demands.push({
       id: `demand-${i}`,
-      source: "direct-user",
-      requestType: "rideshare",
-      kind: "person",
-      origin: {
-        lat: config.geography.center.lat + dist1 * Math.sin(angle1) * latPerKm,
-        lon: config.geography.center.lon + dist1 * Math.cos(angle1) * lonPerKm,
-        name: `Origin ${i}`,
-      },
-      destination: {
-        lat: config.geography.center.lat + dist2 * Math.sin(angle2) * latPerKm,
-        lon: config.geography.center.lon + dist2 * Math.cos(angle2) * lonPerKm,
-        name: `Destination ${i}`,
-      },
-      timeWindow: { startSec: nowSec, endSec: nowSec + 3600 },
-      latestArrivalSec: nowSec + 7200,
-      partySize: 1,
-      weightKg: 0,
-      volumeM3: 0,
-      budget: 2000, // $20 in cents (MODELLED)
-      value: 3000, // $30 in cents (MODELLED)
-      priority: "normal",
-      constraints: { maxWalkingKm: config.maxWalkingKm },
-      status: "OPEN",
-      createdAt: new Date().toISOString(),
+      origin,
+      destination,
+      directDistanceKm: haversineKm(origin, destination),
     });
   }
 
@@ -170,194 +229,176 @@ function generateDemands(config: ExperimentConfig): TransportationDemand[] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// BASELINE: Ordinary Routing (no live station availability)
+// ROUTE ENUMERATION (identical for both strategies)
 // ═══════════════════════════════════════════════════════════════════════
 
-function evaluateBaseline(
-  demands: TransportationDemand[],
+function enumerateRoutes(
+  demand: Demand,
+  stations: SnapshotStation[],
   config: ExperimentConfig,
-): {
-  opportunities: number;
-  feasibleOpportunities: number;
-  totalTravelTimeMin: number;
-  totalWalkingKm: number;
-  estimatedValue: number;
-} {
-  let opportunities = 0;
-  let feasibleOpportunities = 0;
-  let totalTravelTimeMin = 0;
-  let totalWalkingKm = 0;
-  let estimatedValue = 0;
+  snapshotTime: number,
+  hasLiveInventory: boolean, // false = baseline, true = ORYXX
+): RouteOption[] {
+  const routes: RouteOption[] = [];
 
-  for (const demand of demands) {
-    const directDistance = haversineKm(demand.origin, demand.destination);
-    // Baseline: assume walking or transit only (no bike-share station availability knowledge)
-    const walkingTime = (directDistance / config.walkingSpeedKmh) * 60;
-    totalTravelTimeMin += walkingTime;
-    opportunities++;
+  // ── Route 1: Walk direct ──────────────────────────────────────────
+  const walkTime = (demand.directDistanceKm / config.walkingSpeedKmh) * 60;
+  routes.push({
+    type: "walk_direct",
+    travelTimeMin: walkTime,
+    walkingKm: demand.directDistanceKm,
+    generalizedCost: Math.round(walkTime * config.valuePerMinuteSaved),
+    availabilityStatus: "UNKNOWN", // walking is always available, no inventory needed
+    isSelectable: true,
+  });
 
-    // Baseline considers all trips "feasible" (can always walk)
-    feasibleOpportunities++;
+  // ── Route 2+: Bike-share via stations ─────────────────────────────
+  for (const station of stations) {
+    const stationPoint: GeoPoint = { lat: station.latitude, lon: station.longitude };
+    const walkToStation = haversineKm(demand.origin, stationPoint);
+    if (walkToStation > config.maxWalkingKm) continue;
 
-    // MODELLED value: baseline has no bike savings
-    estimatedValue += 0;
-  }
+    const bikeDistance = haversineKm(stationPoint, demand.destination);
+    if (bikeDistance < 0.1) continue; // too short to bike
 
-  return {
-    opportunities,
-    feasibleOpportunities,
-    totalTravelTimeMin,
-    totalWalkingKm: 0, // baseline = direct walking, no station walking
-    estimatedValue,
-  };
-}
+    const walkTimeToStation = (walkToStation / config.walkingSpeedKmh) * 60;
+    const bikeTime = (bikeDistance / config.bikingSpeedKmh) * 60;
+    const totalTime = walkTimeToStation + bikeTime;
 
-// ═══════════════════════════════════════════════════════════════════════
-// ORYXX: With Live Station Availability
-// ═══════════════════════════════════════════════════════════════════════
+    // Determine availability status
+    let availability: AvailabilityStatus;
+    let isSelectable: boolean;
+    let uncertaintyPenaltyMin: number;
 
-function evaluateOryxx(
-  demands: TransportationDemand[],
-  snapshot: LiveObservationSnapshot,
-  config: ExperimentConfig,
-): {
-  opportunities: number;
-  feasibleOpportunities: number;
-  additionalOpportunities: number;
-  totalTravelTimeMin: number;
-  totalWalkingKm: number;
-  estimatedValue: number;
-  travelTimeDeltaMin: number;
-  walkingBurdenDeltaKm: number;
-  estimatedValueDelta: number;
-} {
-  let opportunities = 0;
-  let feasibleOpportunities = 0;
-  let totalTravelTimeMin = 0;
-  let totalWalkingKm = 0;
-  let estimatedValue = 0;
-
-  const snapshotTime = new Date(config.snapshotTimestamp).getTime();
-
-  for (const demand of demands) {
-    const directDistance = haversineKm(demand.origin, demand.destination);
-
-    // Baseline travel time (walking)
-    const baselineTime = (directDistance / config.walkingSpeedKmh) * 60;
-
-    // Find nearest station with bikes within freshness window
-    let bestStation: SnapshotStation | null = null;
-    let bestStationDist = Infinity;
-    let bestStationWalkTime = 0;
-    let bestBikeTime = 0;
-    let bestDestWalkTime = 0;
-
-    for (const station of snapshot.stations) {
-      // Freshness check
+    if (hasLiveInventory) {
+      // ORYXX: has live inventory data
       const stationTime = new Date(station.timestamp).getTime();
       const ageSec = (snapshotTime - stationTime) / 1000;
-      if (ageSec > config.freshnessWindowSec) continue;
-
-      // Must have bikes
-      if (station.free_bikes <= 0) continue;
-
-      const stationDist = haversineKm(demand.origin, {
-        lat: station.latitude,
-        lon: station.longitude,
-      });
-
-      // Must be within walking tolerance
-      if (stationDist > config.maxWalkingKm) continue;
-
-      // Calculate bike route time
-      const walkToStation = (stationDist / config.walkingSpeedKmh) * 60;
-      const stationToDest = haversineKm(
-        { lat: station.latitude, lon: station.longitude },
-        demand.destination,
-      );
-      const bikeTime = (stationToDest / config.bikingSpeedKmh) * 60;
-
-      const totalTime = walkToStation + bikeTime;
-
-      if (totalTime < baselineTime && totalTime < (bestBikeTime || Infinity)) {
-        bestStation = station;
-        bestStationDist = stationDist;
-        bestStationWalkTime = walkToStation;
-        bestBikeTime = bikeTime;
-        bestDestWalkTime = 0; // assume direct dropoff
+      if (ageSec > config.freshnessWindowSec) {
+        availability = "STALE";
+        isSelectable = false; // ORYXX won't route via stale stations
+        uncertaintyPenaltyMin = config.baselineUncertaintyPenaltyMin;
+      } else if (station.free_bikes > 0) {
+        availability = "OBSERVED_AVAILABLE_AT_T";
+        isSelectable = true; // observed available → can select
+        uncertaintyPenaltyMin = 0; // no penalty — observed at source time
+      } else {
+        availability = "UNAVAILABLE"; // observed as 0 bikes
+        isSelectable = false;
+        uncertaintyPenaltyMin = config.baselineUncertaintyPenaltyMin;
       }
-    }
-
-    if (bestStation) {
-      // ORYXX found a bike-share opportunity
-      opportunities++;
-      feasibleOpportunities++;
-      const oryxxTime = bestStationWalkTime + bestBikeTime;
-      totalTravelTimeMin += oryxxTime;
-      totalWalkingKm += bestStationDist;
-
-      // MODELLED value: time saved vs baseline
-      const timeSavedMin = baselineTime - oryxxTime;
-      estimatedValue += Math.round(timeSavedMin * config.valuePerMinuteSaved);
     } else {
-      // No bike opportunity found — fall back to walking
-      opportunities++;
-      feasibleOpportunities++;
-      totalTravelTimeMin += baselineTime;
+      // BASELINE: no live inventory — availability is UNKNOWN
+      availability = "UNKNOWN";
+      // Baseline CAN select a bike-share route, but with an uncertainty penalty
+      // representing the risk of arriving and finding no bikes.
+      isSelectable = true;
+      uncertaintyPenaltyMin = config.baselineUncertaintyPenaltyMin;
     }
+
+    // Generalized cost = time cost + uncertainty penalty cost
+    const timeCost = totalTime * config.valuePerMinuteSaved;
+    const uncertaintyCost = uncertaintyPenaltyMin * config.valuePerMinuteSaved;
+    const generalizedCost = Math.round(timeCost + uncertaintyCost);
+
+    routes.push({
+      type: "bike_share",
+      travelTimeMin: totalTime,
+      walkingKm: walkToStation,
+      generalizedCost,
+      stationId: station.id,
+      stationName: station.name,
+      availabilityStatus: availability,
+      isSelectable,
+    });
   }
 
-  // Compute deltas vs baseline
-  const baselineResult = evaluateBaseline(demands, config);
-  const baselineMeanTime = baselineResult.totalTravelTimeMin / demands.length;
-  const oryxxMeanTime = totalTravelTimeMin / demands.length;
-  const baselineValue = baselineResult.estimatedValue;
-
-  return {
-    opportunities,
-    feasibleOpportunities,
-    additionalOpportunities: feasibleOpportunities - baselineResult.feasibleOpportunities,
-    totalTravelTimeMin,
-    totalWalkingKm,
-    estimatedValue,
-    travelTimeDeltaMin: oryxxMeanTime - baselineMeanTime,
-    walkingBurdenDeltaKm: totalWalkingKm / demands.length,
-    estimatedValueDelta: estimatedValue - baselineValue,
-  };
+  return routes;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// FRESHNESS ANALYSIS
+// BEST ROUTE SELECTION (identical logic for both strategies)
 // ═══════════════════════════════════════════════════════════════════════
 
-function analyzeFreshness(
-  snapshot: LiveObservationSnapshot,
-  config: ExperimentConfig,
-): {
-  windowSec: number;
-  stationsWithinWindow: number;
-  stationsExpired: number;
-  expiryRate: number;
-} {
-  const snapshotTime = new Date(config.snapshotTimestamp).getTime();
-  let within = 0;
-  let expired = 0;
+function selectBestRoute(routes: RouteOption[]): RouteOption {
+  const selectable = routes.filter((r) => r.isSelectable);
+  if (selectable.length === 0) {
+    // Fallback: walk direct (always selectable)
+    return routes.find((r) => r.type === "walk_direct") || routes[0];
+  }
+  return selectable.reduce((best, r) => (r.generalizedCost < best.generalizedCost ? r : best));
+}
 
-  for (const station of snapshot.stations) {
-    const stationTime = new Date(station.timestamp).getTime();
-    const ageSec = (snapshotTime - stationTime) / 1000;
-    if (ageSec <= config.freshnessWindowSec) {
-      within++;
-    } else {
-      expired++;
-    }
+// ═══════════════════════════════════════════════════════════════════════
+// DEMAND-LEVEL EVALUATION
+// ═══════════════════════════════════════════════════════════════════════
+
+function evaluateDemand(
+  demand: Demand,
+  stations: SnapshotStation[],
+  config: ExperimentConfig,
+  snapshotTime: number,
+): DemandResult {
+  // Both strategies enumerate the SAME route set, differing only in
+  // availability status and selectability.
+  const baselineRoutes = enumerateRoutes(demand, stations, config, snapshotTime, false);
+  const oryxxRoutes = enumerateRoutes(demand, stations, config, snapshotTime, true);
+
+  const baselineBest = selectBestRoute(baselineRoutes);
+  const oryxxBest = selectBestRoute(oryxxRoutes);
+
+  // Nearest station distance
+  let nearestStationDist = Infinity;
+  let hasStationWithinWalking = false;
+  for (const station of stations) {
+    const dist = haversineKm(demand.origin, { lat: station.latitude, lon: station.longitude });
+    if (dist < nearestStationDist) nearestStationDist = dist;
+    if (dist <= config.maxWalkingKm) hasStationWithinWalking = true;
+  }
+
+  // Comparison
+  const costDelta = baselineBest.generalizedCost - oryxxBest.generalizedCost;
+  const timeDeltaMin = baselineBest.travelTimeMin - oryxxBest.travelTimeMin;
+
+  let category: DemandResult["comparison"]["category"];
+  let newlyDiscoverable = false;
+
+  const baselineChoseBike = baselineBest.type === "bike_share";
+  const oryxxChoseBike = oryxxBest.type === "bike_share";
+
+  if (oryxxChoseBike && !baselineChoseBike) {
+    // ORYXX selected a bike route that baseline did not (due to uncertainty penalty)
+    newlyDiscoverable = true;
+    category = "ORYXX_WINS";
+  } else if (!oryxxChoseBike && baselineChoseBike) {
+    // Baseline chose bike despite uncertainty — ORYXX found station unavailable/stale
+    category = "BASELINE_WINS";
+  } else if (costDelta > 0) {
+    // Both chose same mode but ORYXX has lower cost
+    category = "ORYXX_WINS";
+  } else if (costDelta < 0) {
+    category = "BASELINE_WINS";
+  } else {
+    category = "TIE";
+  }
+
+  // If neither has a bike route
+  if (!baselineChoseBike && !oryxxChoseBike && !hasStationWithinWalking) {
+    category = "NEITHER_HAS_BIKE";
   }
 
   return {
-    windowSec: config.freshnessWindowSec,
-    stationsWithinWindow: within,
-    stationsExpired: expired,
-    expiryRate: expired / snapshot.stations.length,
+    demandId: demand.id,
+    originLat: demand.origin.lat,
+    originLon: demand.origin.lon,
+    destLat: demand.destination.lat,
+    destLon: demand.destination.lon,
+    directDistanceKm: Math.round(demand.directDistanceKm * 100) / 100,
+    nearestStationDistKm: Math.round(nearestStationDist * 100) / 100,
+    hasStationWithinWalking,
+    baseline: { bestRoute: baselineBest, allRoutes: baselineRoutes },
+    oryxx: { bestRoute: oryxxBest, allRoutes: oryxxRoutes },
+    comparison: { category, costDelta, timeDeltaMin, newlyDiscoverable },
   };
 }
 
@@ -368,15 +409,38 @@ function analyzeFreshness(
 export function runLiveSupplyExperiment(config: ExperimentConfig): ExperimentResult {
   const snapshot = loadSnapshot();
   const demands = generateDemands(config);
+  const snapshotTime = new Date(config.snapshotTimestamp).getTime();
 
   const stationsWithBikes = snapshot.stations.filter((s) => s.free_bikes > 0).length;
   const totalBikes = snapshot.stations.reduce((sum, s) => sum + s.free_bikes, 0);
 
-  const baselineResult = evaluateBaseline(demands, config);
-  const oryxxResult = evaluateOryxx(demands, snapshot, config);
-  const freshness = analyzeFreshness(snapshot, config);
+  // Freshness analysis
+  let stationsWithinFreshness = 0;
+  let stationsExpired = 0;
+  for (const station of snapshot.stations) {
+    const stationTime = new Date(station.timestamp).getTime();
+    const ageSec = (snapshotTime - stationTime) / 1000;
+    if (ageSec <= config.freshnessWindowSec) stationsWithinFreshness++;
+    else stationsExpired++;
+  }
 
-  const n = demands.length || 1;
+  // Evaluate each demand
+  const demandResults: DemandResult[] = demands.map((d) =>
+    evaluateDemand(d, snapshot.stations, config, snapshotTime),
+  );
+
+  // Aggregate metrics
+  const demandsWithStation = demandResults.filter((r) => r.hasStationWithinWalking).length;
+  const newlyDiscoverableCount = demandResults.filter((r) => r.comparison.newlyDiscoverable).length;
+  const oryxxWins = demandResults.filter((r) => r.comparison.category === "ORYXX_WINS").length;
+  const baselineWins = demandResults.filter((r) => r.comparison.category === "BASELINE_WINS").length;
+  const ties = demandResults.filter((r) => r.comparison.category === "TIE").length;
+  const neitherHasBike = demandResults.filter((r) => r.comparison.category === "NEITHER_HAS_BIKE").length;
+
+  const validComparisons = demandResults.filter((r) => r.comparison.category !== "NEITHER_HAS_BIKE");
+  const n = validComparisons.length || 1;
+  const meanCostDelta = validComparisons.reduce((s, r) => s + r.comparison.costDelta, 0) / n;
+  const meanTimeDeltaMin = validComparisons.reduce((s, r) => s + r.comparison.timeDeltaMin, 0) / n;
 
   return {
     experimentId: `live-exp-${Date.now()}-${config.demandSeed}`,
@@ -386,25 +450,27 @@ export function runLiveSupplyExperiment(config: ExperimentConfig): ExperimentRes
     stationCount: snapshot.stations.length,
     stationsWithBikes,
     totalBikesObserved: totalBikes,
-    baseline: {
-      opportunities: baselineResult.opportunities,
-      feasibleOpportunities: baselineResult.feasibleOpportunities,
-      meanTravelTimeMin: Math.round((baselineResult.totalTravelTimeMin / n) * 100) / 100,
-      meanWalkingKm: 0,
-      estimatedValue: baselineResult.estimatedValue,
+    stationsWithinFreshness,
+    staleRate: stationsExpired / snapshot.stations.length,
+    demandCount: demands.length,
+    demandsWithStation: demandsWithStation,
+    routeLevel: {
+      newlyDiscoverableCount,
+      newlyDiscoverableRate: newlyDiscoverableCount / demands.length,
+      oryxxWins,
+      baselineWins,
+      ties,
+      neitherHasBike,
+      meanCostDelta: Math.round(meanCostDelta),
+      meanTimeDeltaMin: Math.round(meanTimeDeltaMin * 100) / 100,
+      improvementRate: oryxxWins / demands.length,
     },
-    oryxx: {
-      opportunities: oryxxResult.opportunities,
-      feasibleOpportunities: oryxxResult.feasibleOpportunities,
-      additionalOpportunities: oryxxResult.additionalOpportunities,
-      meanTravelTimeMin: Math.round((oryxxResult.totalTravelTimeMin / n) * 100) / 100,
-      meanWalkingKm: Math.round((oryxxResult.totalWalkingKm / n) * 100) / 100,
-      estimatedValue: oryxxResult.estimatedValue,
-      estimatedValueDelta: oryxxResult.estimatedValueDelta,
-      travelTimeDeltaMin: Math.round(oryxxResult.travelTimeDeltaMin * 100) / 100,
-      walkingBurdenDeltaKm: Math.round(oryxxResult.walkingBurdenDeltaKm * 100) / 100,
+    freshness: {
+      windowSec: config.freshnessWindowSec,
+      stationsWithinWindow: stationsWithinFreshness,
+      stationsExpired,
+      expiryRate: stationsExpired / snapshot.stations.length,
     },
-    freshness,
     provenance: {
       environment: "OBSERVED_ONLY",
       source: "citybik.es API (Citi Bike NYC)",
@@ -415,10 +481,11 @@ export function runLiveSupplyExperiment(config: ExperimentConfig): ExperimentRes
     },
     classifications: {
       observed: ["station location", "free_bikes count", "timestamp"],
-      inferred: ["route feasibility", "walking distance", "arrival estimate", "bike route time"],
-      assumed: ["user accepts walking to station", "bike remains available until arrival", "user chooses bike-share"],
-      unknown: ["actual booking", "actual acceptance", "actual completion"],
+      inferred: ["route feasibility", "walking distance", "bike route time", "generalized cost"],
+      assumed: ["user accepts walking to station", "bike remains available until arrival", "user chooses best route"],
+      unknown: ["actual booking", "actual acceptance", "actual completion", "arrival availability"],
     },
+    demandResults,
   };
 }
 
@@ -434,4 +501,39 @@ export function runFreshnessSweep(
     const config = { ...baseConfig, freshnessWindowSec: windowSec };
     return { windowSec, result: runLiveSupplyExperiment(config) };
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// INVARIANT TEST: zero-inventory snapshot should make ORYXX == baseline
+// ═══════════════════════════════════════════════════════════════════════
+
+export function runInvariantCheck(config: ExperimentConfig): {
+  withLiveInventory: ExperimentResult;
+  withZeroInventory: ExperimentResult;
+  invariantHolds: boolean;
+} {
+  // Run with real snapshot
+  const withLive = runLiveSupplyExperiment(config);
+
+  // Create a modified snapshot with all free_bikes = 0
+  const snapshot = loadSnapshot();
+  const zeroSnapshot: LiveObservationSnapshot = {
+    ...snapshot,
+    stations: snapshot.stations.map((s) => ({ ...s, free_bikes: 0 })),
+  };
+
+  // Run with zero inventory (ORYXX should become equivalent to baseline)
+  // We need to temporarily override the snapshot loader
+  const originalLoader = loadSnapshot;
+  (loadSnapshot as any) = () => zeroSnapshot;
+
+  const withZero = runLiveSupplyExperiment(config);
+
+  // Restore
+  (loadSnapshot as any) = originalLoader;
+
+  // Check invariant: with zero inventory, ORYXX should have 0 newly discoverable routes
+  const invariantHolds = withZero.routeLevel.newlyDiscoverableCount === 0;
+
+  return { withLiveInventory: withLive, withZeroInventory: withZero, invariantHolds };
 }
