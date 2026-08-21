@@ -662,12 +662,12 @@ describe("ORYXX two-sided marketplace — buyer_accept / provider_accept spine",
       expect(first.body.agreement).toBeTruthy();
       const agreementId = first.body.agreement.id;
 
-      // Second provider_accept_offer is REJECTED with 400 because the
-      // offer is now PROVIDER_ACCEPTED, not BUYER_ACCEPTED. This is NOT
-      // a strict idempotent replay — the second call is a no-op rejection.
+      // Second provider_accept_offer is IDEMPOTENT — the claim already
+      // exists with status ACCEPTED, so it returns the cached result (200).
+      // No duplicate provider call, no duplicate agreement.
       const second = await providerAcceptOffer(provider, offerId);
-      expect(second.status).toBe(400);
-      expect(second.body?.error).toMatch(/BUYER_ACCEPTED/i);
+      expect(second.status).toBe(200);
+      expect(second.body?.message).toMatch(/idempotent|already accepted/i);
 
       // DB: offer remains PROVIDER_ACCEPTED (no rollback).
       const dbOffer = await db.marketplaceOffer.findUnique({
