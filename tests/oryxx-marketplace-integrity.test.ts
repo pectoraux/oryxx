@@ -1094,30 +1094,16 @@ describe("ORYXX Stage 6A — Marketplace integrity (6 defect fixes)", () => {
       });
       expect(dbSupply!.status).toBe("AVAILABLE");
 
-      // Sanity: every call returned either 200 (accepted) or 400 (expired
-      // / not PENDING). No 5xx errors (the buyer_accept path is fully
-      // caught — no unique-constraint violations to bubble up).
+      // Sanity: every call returned either 200 (accepted), 400 (expired),
+      // or 409 (conflict — offer no longer PENDING). No 5xx errors.
       for (const r of results) {
-        expect([200, 400]).toContain(r.status);
+        expect([200, 400, 409]).toContain(r.status);
       }
 
       // At most ONE 200 response — the offer can only transition
-      // PENDING → BUYER_ACCEPTED once. Any later call that reads
-      // BUYER_ACCEPTED returns 400 ("only PENDING offers can be
-      // buyer-accepted"). Calls that read expired return 400 too.
-      //
-      // NOTE: With the current implementation, the status check is
-      // outside the tx, so multiple concurrent calls COULD all read
-      // PENDING before any commits, all enter their txs, and all return
-      // 200 (idempotent overwrites). The DB still ends in exactly one
-      // terminal state (BUYER_ACCEPTED), satisfying the spec's "exactly
-      // one terminal outcome". The "at most one should succeed" line
-      // of the spec is the ideal; the implementation may allow multiple
-      // idempotent successes when the race window is wide. We assert
-      // the DB invariant strictly and accept any count of 200s here.
+      // PENDING → BUYER_ACCEPTED once (atomic updateMany guarantees this).
       const okCount = results.filter((r) => r.status === 200).length;
-      expect(okCount).toBeGreaterThanOrEqual(0);
-      expect(okCount).toBeLessThanOrEqual(N);
+      expect(okCount).toBeLessThanOrEqual(1);
 
       // The offer ended in ONE terminal state — the spec's primary
       // invariant. The offer row is a single record, so by construction
