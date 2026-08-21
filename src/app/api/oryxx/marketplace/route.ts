@@ -1395,8 +1395,8 @@ export async function POST(req: Request) {
     if (!assertProviderOwnsOffer(offer, provider)) return providerAuthError();
 
     // ── STEP 1: Create durable claim BEFORE external call ────────────
-    // Use upsert on (offerId, providerId) to guarantee exactly one claim.
-    // If the claim already exists (retry/concurrent), return existing result.
+    // Use upsert on (offerId, providerId) to guarantee exactly one claim row.
+    // The upsert increments attemptCount on retries.
     const claimKey = `accept-${offer.id}-${provider.providerId}`;
     let attempt = await db.providerAcceptanceAttempt.upsert({
       where: { claimKey },
@@ -1411,6 +1411,7 @@ export async function POST(req: Request) {
     });
 
     // If a prior attempt already reached a terminal state, return it.
+    // ACCEPTED: return cached result (idempotent — no provider call).
     if (attempt.status === "ACCEPTED") {
       return NextResponse.json({
         offer: { id: offer.id, status: "PROVIDER_ACCEPTED" },
@@ -1421,6 +1422,7 @@ export async function POST(req: Request) {
         providerReference: attempt.providerReference ?? undefined,
       });
     }
+    // REJECTED: return cached rejection (no provider call).
     if (attempt.status === "REJECTED") {
       return NextResponse.json({
         error: `Provider previously rejected this offer: ${attempt.lastError || "unknown"}`,
@@ -1428,11 +1430,29 @@ export async function POST(req: Request) {
         claimStatus: "REJECTED",
       }, { status: 400 });
     }
+    // UNKNOWN: provider outcome is uncertain — reconciliation required.
+    // Do NOT automatically retry. Return 503.
+    if (attempt.status === "UNKNOWN") {
+      return NextResponse.json({
+        error: "Provider acceptance outcome is UNKNOWN. Reconciliation required.",
+        claimId: attempt.id,
+        claimStatus: "UNKNOWN",
+        providerReference: attempt.providerReference ?? undefined,
+        lastError: attempt.lastError,
+      }, { status: 503 });
+    }
+    // SUBMITTED: another request currently owns the external call.
+    // Return 202 (in-progress) — do NOT call the provider.
+    if (attempt.status === "SUBMITTED") {
+      return NextResponse.json({
+        message: "Provider acceptance is in progress (another request owns the external call).",
+        claimId: attempt.id,
+        claimStatus: "SUBMITTED",
+      }, { status: 202 });
+    }
 
     // ── STEP 2: Verify offer is still BUYER_ACCEPTED ─────────────────
-    // (re-read after the claim, inside a short transaction)
     if (offer.status !== "BUYER_ACCEPTED") {
-      // Check if another request already finalized it
       if (offer.status === "PROVIDER_ACCEPTED") {
         return NextResponse.json({
           error: "Offer already accepted by another request.",
@@ -1444,15 +1464,55 @@ export async function POST(req: Request) {
       );
     }
 
-    // ── STEP 3: Mark claim as SUBMITTED, then call provider ─────────
-    // Update the claim to SUBMITTED before the external call.
-    await db.providerAcceptanceAttempt.update({
-      where: { id: attempt.id },
+    // ── STEP 3: ATOMICALLY claim PENDING → SUBMITTED ────────────────
+    // This is the CRITICAL concurrency guard. Only the request that
+    // atomically transitions PENDING → SUBMITTED owns the external call.
+    // All other concurrent requests see SUBMITTED and return 202.
+    //
+    // updateMany with WHERE status = 'PENDING' is equivalent to
+    // SELECT FOR UPDATE + conditional UPDATE. If count === 0, another
+    // request already claimed it (or it was already in a terminal state).
+    const claimOwnership = await db.providerAcceptanceAttempt.updateMany({
+      where: { id: attempt.id, status: "PENDING" },
       data: { status: "SUBMITTED" },
     });
 
-    // Call the provider adapter with the idempotencyKey.
-    // The adapter is responsible for deduplicating calls with the same key.
+    if (claimOwnership.count === 0) {
+      // Another request won the race. Re-read the claim to determine
+      // its current state and return the appropriate response.
+      const refreshedAttempt = await db.providerAcceptanceAttempt.findUnique({
+        where: { id: attempt.id },
+      });
+      if (refreshedAttempt?.status === "SUBMITTED") {
+        return NextResponse.json({
+          message: "Provider acceptance is in progress (another request owns the external call).",
+          claimId: attempt.id,
+          claimStatus: "SUBMITTED",
+        }, { status: 202 });
+      }
+      if (refreshedAttempt?.status === "ACCEPTED") {
+        return NextResponse.json({
+          offer: { id: offer.id, status: "PROVIDER_ACCEPTED" },
+          agreement: await db.marketplaceAgreement.findUnique({ where: { offerId: offer.id } }),
+          message: "Provider already accepted this offer (idempotent).",
+          claimId: attempt.id,
+          claimStatus: "ACCEPTED",
+          providerReference: refreshedAttempt.providerReference ?? undefined,
+        });
+      }
+      // Fallback: return conflict
+      return NextResponse.json({
+        error: "Claim is no longer PENDING. Another request owns the external call.",
+        claimId: attempt.id,
+        claimStatus: refreshedAttempt?.status ?? "UNKNOWN",
+      }, { status: 409 });
+    }
+
+    // ── STEP 4: Call provider adapter (ONLY the owner reaches here) ─
+    // This request is the sole owner of the external provider call.
+    // The adapter receives the idempotencyKey (claimKey) so that even if
+    // the adapter is called twice (e.g., by a bug or reconciliation),
+    // it deduplicates by key.
     const adapter = providerRegistry.get(offer.providerId);
     let providerAccepted = false;
     let providerReference: string | undefined;

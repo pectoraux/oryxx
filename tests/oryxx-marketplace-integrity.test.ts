@@ -865,12 +865,12 @@ describe("ORYXX Stage 6A — Marketplace integrity (6 defect fixes)", () => {
       expect(reservedSuppliesForOffer).toBe(1);
 
       // Exactly ONE call returned 200 (the winner). The remaining 99
-      // returned 409 (conflict — offer already claimed, agreement already
-      // exists, or supply already reserved). Zero HTTP 500.
+      // returned 202 (SUBMITTED — another request owns the external call)
+      // or 409 (offer already claimed). Zero HTTP 500.
       const okCount = results.filter((r) => r.status === 200).length;
       expect(okCount).toBe(1);
-      const conflictCount = results.filter((r) => r.status === 409).length;
-      expect(conflictCount).toBe(99);
+      const nonOwnerCount = results.filter((r) => r.status === 202 || r.status === 409).length;
+      expect(nonOwnerCount).toBe(99);
       const errorCount = results.filter((r) => r.status >= 500).length;
       expect(errorCount).toBe(0);
 

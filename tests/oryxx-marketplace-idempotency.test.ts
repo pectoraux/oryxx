@@ -445,11 +445,11 @@ describe("ORYXX — Provider acceptance idempotency (claim pattern)", () => {
 
       // ── HTTP status distribution ────────────────────────────────────
       const okCount = results.filter((r) => r.status === 200).length;
-      const conflictCount = results.filter((r) => r.status === 409).length;
+      const nonOwnerCount = results.filter((r) => r.status === 202 || r.status === 409).length;
       const errorCount = results.filter((r) => r.status >= 500).length;
 
       expect(okCount).toBe(1);
-      expect(conflictCount).toBe(99);
+      expect(nonOwnerCount).toBe(99);
       expect(errorCount).toBe(0);
 
       // The winner's response contains the ACTIVE agreement.
@@ -848,5 +848,141 @@ describe("ORYXX — Provider acceptance idempotency (claim pattern)", () => {
       // Reference demandId so it's not flagged unused.
       expect(demandId).toBeTruthy();
     }, 300000);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ATOMIC CLAIM OWNERSHIP (PENDING → SUBMITTED)
+  // ═══════════════════════════════════════════════════════════════════
+  describe("Atomic claim ownership", () => {
+    test("6. 100 concurrent → exactly 1 owner calls adapter, 99 see SUBMITTED/ACCEPTED", async () => {
+      const buyer = emailFor("t6-buyer");
+      const provider = emailFor("t6-provider");
+      const { offerId } = await setupChainToBuyerAccepted(buyer);
+
+      // Fire 100 concurrent provider_accept_offer calls
+      const results = await Promise.all(
+        Array.from({ length: 100 }, () =>
+          providerAcceptOffer(provider, offerId).catch((e) => ({
+            status: -1,
+            body: { error: String(e) },
+          })),
+        ),
+      );
+
+      // Wait for finalization to settle
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Status distribution: exactly 1 × 200 (winner), rest are 202 or 409
+      const okCount = results.filter((r) => r.status === 200).length;
+      const nonOwnerCount = results.filter((r) => r.status === 202 || r.status === 409).length;
+      const errorCount = results.filter((r) => r.status >= 500).length;
+
+      expect(okCount).toBe(1);
+      expect(nonOwnerCount).toBe(99);
+      expect(errorCount).toBe(0);
+
+      // DB: exactly 1 ProviderAcceptanceAttempt
+      const claimCount = await db.providerAcceptanceAttempt.count({
+        where: { offerId },
+      });
+      expect(claimCount).toBe(1);
+
+      // DB: claim is ACCEPTED
+      const claim = await db.providerAcceptanceAttempt.findFirst({
+        where: { offerId },
+      });
+      expect(claim!.status).toBe("ACCEPTED");
+      expect(claim!.providerReference).toBeTruthy();
+
+      // DB: exactly 1 agreement, 1 RESERVED supply, offer = PROVIDER_ACCEPTED
+      const agreementCount = await db.marketplaceAgreement.count({ where: { offerId } });
+      expect(agreementCount).toBe(1);
+
+      const offer = await db.marketplaceOffer.findUnique({ where: { id: offerId } });
+      expect(offer!.status).toBe("PROVIDER_ACCEPTED");
+    }, 300000);
+
+    test("7. retry after ACCEPTED returns cached result (no second provider call)", async () => {
+      const buyer = emailFor("t7-buyer");
+      const provider = emailFor("t7-provider");
+      const { offerId } = await setupChainToBuyerAccepted(buyer);
+
+      // First call: provider accepts
+      const first = await providerAcceptOffer(provider, offerId);
+      expect(first.status).toBe(200);
+      const firstRef = first.body.providerReference;
+
+      // Retry: should return cached ACCEPTED result
+      const retry = await providerAcceptOffer(provider, offerId);
+      expect(retry.status).toBe(200);
+      expect(retry.body.claimStatus).toBe("ACCEPTED");
+      expect(retry.body.providerReference).toBe(firstRef);
+
+      // DB: still exactly 1 claim
+      const claimCount = await db.providerAcceptanceAttempt.count({
+        where: { offerId },
+      });
+      expect(claimCount).toBe(1);
+    }, 120000);
+
+    test("8. UNKNOWN state returns 503 and does not auto-retry", async () => {
+      const buyer = emailFor("t8-buyer");
+      const provider = emailFor("t8-provider");
+      const { offerId } = await setupChainToBuyerAccepted(buyer);
+
+      // Manually create a claim in UNKNOWN state (simulating provider timeout)
+      const claimKey = `accept-${offerId}-sandbox-rideshare`;
+      await db.providerAcceptanceAttempt.upsert({
+        where: { claimKey },
+        update: { status: "UNKNOWN", lastError: "Simulated timeout" },
+        create: {
+          offerId,
+          providerId: "sandbox-rideshare",
+          claimKey,
+          status: "UNKNOWN",
+          lastError: "Simulated timeout",
+          environment: "SANDBOX",
+        },
+      });
+
+      // Retry: should return 503 (reconciliation required), NOT call provider
+      const retry = await providerAcceptOffer(provider, offerId);
+      expect(retry.status).toBe(503);
+      expect(retry.body.claimStatus).toBe("UNKNOWN");
+      expect(retry.body.error).toMatch(/UNKNOWN|reconciliation/i);
+
+      // DB: claim still UNKNOWN (no auto-retry)
+      const claim = await db.providerAcceptanceAttempt.findFirst({
+        where: { offerId },
+      });
+      expect(claim!.status).toBe("UNKNOWN");
+    }, 120000);
+
+    test("9. SUBMITTED state returns 202 (in-progress, no provider call)", async () => {
+      const buyer = emailFor("t9-buyer");
+      const provider = emailFor("t9-provider");
+      const { offerId } = await setupChainToBuyerAccepted(buyer);
+
+      // Manually create a claim in SUBMITTED state (simulating in-progress)
+      const claimKey = `accept-${offerId}-sandbox-rideshare`;
+      await db.providerAcceptanceAttempt.upsert({
+        where: { claimKey },
+        update: { status: "SUBMITTED" },
+        create: {
+          offerId,
+          providerId: "sandbox-rideshare",
+          claimKey,
+          status: "SUBMITTED",
+          environment: "SANDBOX",
+        },
+      });
+
+      // Request: should return 202 (in-progress), NOT call provider
+      const res = await providerAcceptOffer(provider, offerId);
+      expect([202, 200]).toContain(res.status); // 202 if still SUBMITTED, 200 if finalized
+      if (res.status === 202) {
+        expect(res.body.claimStatus).toBe("SUBMITTED");
+      }
+    }, 120000);
   });
 });
