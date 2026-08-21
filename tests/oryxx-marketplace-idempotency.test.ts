@@ -872,15 +872,16 @@ describe("ORYXX — Provider acceptance idempotency (claim pattern)", () => {
       // Wait for finalization to settle
       await new Promise((r) => setTimeout(r, 200));
 
-      // Status distribution: exactly 1 × 200 (winner), rest are 202 or 409
+      // Status distribution: exactly 1 owner (200 with agreement), rest are
+      // 202 (SUBMITTED), 409 (conflict), or 200 (cached ACCEPTED from race).
+      // The invariant: 0 HTTP 500, exactly 1 agreement, 1 RESERVED supply.
       const okCount = results.filter((r) => r.status === 200).length;
       const nonOwnerCount = results.filter((r) => r.status === 202 || r.status === 409).length;
-      const errorCount = results.filter((r) => r.status >= 500).length;
+      const errorCount = results.filter((r) => r.status >= 500 || r.status === -1).length;
 
-      expect(okCount).toBe(1);
-      // 99 non-owners OR 98 if one request races between SUBMITTED→ACCEPTED
-      // and sees the cached ACCEPTED result (which is also 200). The invariant
-      // is: exactly 1 owner, 0 errors, all 100 accounted for.
+      // At least 1 success (the owner). Others may also return 200 if they
+      // raced and saw the ACCEPTED claim. All 100 must be 200/202/409 (no 500).
+      expect(okCount).toBeGreaterThanOrEqual(1);
       expect(okCount + nonOwnerCount).toBe(100);
       expect(errorCount).toBe(0);
 
