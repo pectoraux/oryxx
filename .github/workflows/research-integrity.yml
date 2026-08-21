@@ -227,6 +227,16 @@ jobs:
           DATABASE_URL: ${{ env.DATABASE_URL }}
           DIRECT_URL: ${{ env.DIRECT_URL }}
 
+      # ─── CITI BIKE NYC ADAPTER TESTS (REAL API) ──────────────────────
+      # Tests the real Citi Bike NYC adapter against the live CityBik.es API.
+      # Verifies real supply discovery, provenance isolation (OBSERVED_ONLY),
+      # and that the adapter correctly declares NOT_SUPPORTED for acceptance/
+      # execution/completion.
+      - name: Citi Bike NYC adapter tests (real CityBik.es API)
+        run: bun test tests/oryxx-citibike.test.ts --timeout 60000
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
       # ─── LINT ───────────────────────────────────────────────────────
       - name: Lint
         run: bun run lint

@@ -18,7 +18,7 @@
 // PROVENANCE
 // ═══════════════════════════════════════════════════════════════════════
 
-export type Environment = "FIXTURE" | "SANDBOX" | "LIVE" | "REPLAY";
+export type Environment = "FIXTURE" | "SANDBOX" | "LIVE" | "REPLAY" | "LIVE_REAL" | "OBSERVED_ONLY";
 
 export type ProvenanceSource =
   | "direct-user"
@@ -36,7 +36,9 @@ export type ProvenanceSource =
   | "oryxx-owned"
   | "observation"
   | "inferred"
-  | "assumed";
+  | "assumed"
+  | "citybik-es"
+  | "citi-bike-nyc";
 
 export interface Provenance {
   environment: Environment;
@@ -220,7 +222,29 @@ export type ProviderType =
   | "oryxx-owned"
   | "private-driver";
 
-export type ConnectionStatus = "CONNECTED" | "NOT_CONNECTED" | "SANDBOX_ACTIVE" | "FIXTURE_ONLY" | "ERROR";
+export type ConnectionStatus = "CONNECTED" | "NOT_CONNECTED" | "SANDBOX_ACTIVE" | "FIXTURE_ONLY" | "ERROR" | "OBSERVED_ONLY";
+
+// Provider integration lifecycle for real providers
+export type ProviderIntegrationStatus =
+  | "DISABLED"      // not configured
+  | "CONNECTED"     // API reachable, health check passed
+  | "VALIDATED"      // test data confirmed
+  | "READY"          // operator-validated, ready for activation
+  | "ACTIVE"         // accepting real marketplace operations
+  | "PAUSED";        // temporarily deactivated by operator
+
+// Provider provenance classification
+export interface ProviderProvenance {
+  environment: Environment;
+  providerId: string;
+  providerName: string;
+  coverage: string;          // e.g., "New York, NY"
+  dataSource: string;        // e.g., "citybik.es API"
+  lastUpdated: string;        // ISO timestamp of last successful API call
+  executionCapable: boolean;  // can the provider actually execute trips?
+  acceptanceCapable: boolean; // can the provider accept/reject offers?
+  completionVerificationCapable: boolean; // can the provider verify completion?
+}
 
 export interface ProviderCapabilities {
   quotes: boolean;

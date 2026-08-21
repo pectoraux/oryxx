@@ -46,6 +46,7 @@ import { db } from "@/lib/db";
 import { providerRegistry } from "@/lib/oryxx/live/adapters/provider-registry";
 import { SandboxTransportationProvider } from "@/lib/oryxx/live/adapters/sandbox-provider";
 import { FixtureTransportationProvider } from "@/lib/oryxx/live/adapters/fixture-provider";
+import { CitiBikeNYCProvider } from "@/lib/oryxx/live/adapters/citibike-provider";
 import { discoverOpportunities } from "@/lib/oryxx/live/engine/opportunity-engine";
 import { clearMarket } from "@/lib/oryxx/live/engine/market-clearing";
 import { priceOpportunity } from "@/lib/oryxx/live/engine/pricing";
@@ -93,6 +94,9 @@ function ensureProviders() {
   }
   if (!providerRegistry.get("fixture-transit")) {
     providerRegistry.register(new FixtureTransportationProvider());
+  }
+  if (!providerRegistry.get("citi-bike-nyc")) {
+    providerRegistry.register(new CitiBikeNYCProvider());
   }
   providersRegistered = true;
 }
@@ -759,6 +763,41 @@ export async function GET(req: Request) {
       take: 100,
     });
     return NextResponse.json({ events });
+  }
+
+  if (view === "provider_health") {
+    // Health check for the Citi Bike NYC provider (real API)
+    const citibike = providerRegistry.get("citi-bike-nyc") as CitiBikeNYCProvider | undefined;
+    if (!citibike) {
+      return NextResponse.json({ error: "Citi Bike NYC provider not registered." }, { status: 404 });
+    }
+    const health = await citibike.healthCheck();
+    return NextResponse.json({
+      provider: citibike.getProviderIdentity(),
+      provenance: citibike.getProvenance(),
+      integrationStatus: citibike.getIntegrationStatus(),
+      health,
+    });
+  }
+
+  if (view === "real_supply") {
+    // Discover REAL supply from Citi Bike NYC (observed-only)
+    const citibike = providerRegistry.get("citi-bike-nyc") as CitiBikeNYCProvider | undefined;
+    if (!citibike) {
+      return NextResponse.json({ error: "Citi Bike NYC provider not registered." }, { status: 404 });
+    }
+    // NYC center: Times Square
+    const area = { lat: 40.7589, lon: -73.9851 };
+    const radiusKm = parseInt(url.searchParams.get("radius") || "5");
+    const supplies = await citibike.discoverSupply(area, radiusKm);
+    return NextResponse.json({
+      provider: citibike.getProviderIdentity(),
+      provenance: citibike.getProvenance(),
+      count: supplies.length,
+      supplies: supplies.slice(0, 50), // limit response size
+      environment: "OBSERVED_ONLY",
+      note: "Real observed supply from Citi Bike NYC via CityBik.es API. This is NOT transactional — acceptance/execution NOT_SUPPORTED.",
+    });
   }
 
   // Default overview — counts scoped to the authenticated user where applicable.
