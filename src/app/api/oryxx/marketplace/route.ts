@@ -1467,7 +1467,7 @@ export async function POST(req: Request) {
         error: `Provider previously rejected this offer: ${attempt.lastError || "unknown"}`,
         claimId: attempt.id,
         claimStatus: "REJECTED",
-      }, { status: 400 });
+      }, { status: 409 });
     }
     // UNKNOWN: provider outcome is uncertain — reconciliation required.
     // Do NOT automatically retry. Return 503.
