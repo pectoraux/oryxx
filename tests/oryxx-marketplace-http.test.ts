@@ -236,13 +236,18 @@ async function setupChainToOffer(email: string) {
   return { demandId, opportunityId, offerId };
 }
 
-/** Walk through the full chain as `email` up to a signed agreement. */
+/** Walk through the full chain as `email` up to a signed agreement.
+ *  Two-sided: buyer accepts, then provider accepts (creates agreement). */
 async function setupChainToAgreement(email: string) {
   const { demandId, opportunityId, offerId } = await setupChainToOffer(email);
   await negotiate(email, opportunityId);
+  // Buyer accepts (PENDING → BUYER_ACCEPTED, no agreement yet)
   const acc = await acceptOffer(email, offerId);
-  if (acc.status !== 200) throw new Error(`accept_offer failed: ${JSON.stringify(acc.body)}`);
-  const agreementId: string = acc.body.agreement.id;
+  if (acc.status !== 200) throw new Error(`buyer_accept_offer failed: ${JSON.stringify(acc.body)}`);
+  // Provider accepts (BUYER_ACCEPTED → PROVIDER_ACCEPTED, creates agreement)
+  const providerAcc = await callRoute({ mode: "provider_accept_offer", offerId }, email);
+  if (providerAcc.status !== 200) throw new Error(`provider_accept_offer failed: ${JSON.stringify(providerAcc.body)}`);
+  const agreementId: string = providerAcc.body.agreement.id;
   return { demandId, opportunityId, offerId, agreementId };
 }
 
@@ -752,43 +757,48 @@ describe("ORYXX HTTP-level marketplace — production route", () => {
     }, 60000);
 
     // ─── 7. ACCEPT_OFFER TRANSITIONS THROUGH CORRECT STATES ──────────
-    test("7. accept_offer transitions through correct states", async () => {
+    test("7. buyer_accept + provider_accept transitions through correct states", async () => {
       const email = emailFor("lifecycle");
       expect(chainOfferId).toBeTruthy();
 
+      // Buyer accepts (PENDING → BUYER_ACCEPTED, no agreement yet)
       const acc = await acceptOffer(email, chainOfferId);
       expect(acc.status).toBe(200);
       expect(acc.body.offer).toBeTruthy();
-      expect(acc.body.offer.status).toBe("ACCEPTED");
-      expect(acc.body.agreement).toBeTruthy();
+      expect(acc.body.offer.status).toBe("BUYER_ACCEPTED");
+      // No agreement created yet (two-sided marketplace)
+      expect(acc.body.agreement).toBeUndefined();
 
-      chainAgreementId = acc.body.agreement.id;
+      // DB: offer = BUYER_ACCEPTED, no agreement yet
+      let dbOffer = await db.marketplaceOffer.findUnique({ where: { id: chainOfferId } });
+      expect(dbOffer!.status).toBe("BUYER_ACCEPTED");
+      let agreementCount = await db.marketplaceAgreement.count({ where: { offerId: chainOfferId } });
+      expect(agreementCount).toBe(0);
 
-      // DB: offer = ACCEPTED.
-      const dbOffer = await db.marketplaceOffer.findUnique({
-        where: { id: chainOfferId },
-      });
-      expect(dbOffer!.status).toBe("ACCEPTED");
+      // Provider accepts (BUYER_ACCEPTED → PROVIDER_ACCEPTED, creates agreement)
+      const providerAcc = await callRoute({ mode: "provider_accept_offer", offerId: chainOfferId }, email);
+      expect(providerAcc.status).toBe(200);
+      expect(providerAcc.body.offer.status).toBe("PROVIDER_ACCEPTED");
+      expect(providerAcc.body.agreement).toBeTruthy();
+      chainAgreementId = providerAcc.body.agreement.id;
+
+      // DB: offer = PROVIDER_ACCEPTED.
+      dbOffer = await db.marketplaceOffer.findUnique({ where: { id: chainOfferId } });
+      expect(dbOffer!.status).toBe("PROVIDER_ACCEPTED");
 
       // DB: agreement created (ACTIVE).
-      const dbAgg = await db.marketplaceAgreement.findUnique({
-        where: { id: chainAgreementId },
-      });
+      const dbAgg = await db.marketplaceAgreement.findUnique({ where: { id: chainAgreementId } });
       expect(dbAgg).toBeTruthy();
       expect(dbAgg!.status).toBe("ACTIVE");
       expect(dbAgg!.isMarketplaceOpportunity).toBe(true);
       expect(dbAgg!.researchStimulus).toBe(false);
 
       // DB: supply transitioned AVAILABLE → RESERVED.
-      const dbOpp = await db.transportationOpportunity.findUnique({
-        where: { id: chainOpportunityId },
-      });
-      const dbSupply = await db.transportationSupply.findUnique({
-        where: { id: dbOpp!.supplyId },
-      });
+      const dbOpp = await db.transportationOpportunity.findUnique({ where: { id: chainOpportunityId } });
+      const dbSupply = await db.transportationSupply.findUnique({ where: { id: dbOpp!.supplyId } });
       expect(dbSupply!.status).toBe("RESERVED");
 
-      // DB: opportunity transitioned OFFERED → ACCEPTED.
+      // DB: opportunity transitioned to ACCEPTED (both sides).
       expect(dbOpp!.status).toBe("ACCEPTED");
     }, 60000);
 
