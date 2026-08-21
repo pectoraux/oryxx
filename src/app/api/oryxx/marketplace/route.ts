@@ -1418,6 +1418,7 @@ export async function POST(req: Request) {
         message: "Provider already accepted this offer (idempotent).",
         claimId: attempt.id,
         claimStatus: "ACCEPTED",
+        providerReference: attempt.providerReference ?? undefined,
       });
     }
     if (attempt.status === "REJECTED") {
