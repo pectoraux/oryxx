@@ -873,21 +873,23 @@ describe("ORYXX — Provider acceptance idempotency (claim pattern)", () => {
       await new Promise((r) => setTimeout(r, 200));
 
       // Status distribution: exactly 1 owner (200 with agreement), rest are
-      // 202 (SUBMITTED), 409 (conflict), or 200 (cached ACCEPTED from race).
-      // The invariant: 0 HTTP 500, exactly 1 agreement, 1 RESERVED supply.
+      // 202 (SUBMITTED), 409 (conflict — offer already finalized), or
+      // 200 (cached ACCEPTED from race). ALL 100 must be classified.
+      // No 400, no 500, no unclassified status.
       const okCount = results.filter((r) => r.status === 200).length;
       const nonOwnerCount = results.filter((r) => r.status === 202 || r.status === 409).length;
       const errorCount = results.filter((r) => r.status >= 500 || r.status === -1).length;
+      const unexpectedCount = results.filter(
+        (r) => r.status !== 200 && r.status !== 202 && r.status !== 409
+      ).length;
 
-      // At least 1 success (the owner). Others may also return 200 if they
-      // raced and saw the ACCEPTED claim. All 100 must be 200/202/409 (no 500).
-      expect(okCount).toBeGreaterThanOrEqual(1);
-      // okCount + nonOwnerCount should be 100, but one request might
-      // fall through with a status we don't classify (e.g., 400 from
-      // offer not BUYER_ACCEPTED if the race is tight). The invariant
-      // is: 0 HTTP 500, at least 1 owner.
+      // STRICT: every request must be 200/202/409. No 400, no 500, no -1.
+      expect(unexpectedCount).toBe(0);
       expect(errorCount).toBe(0);
-      expect(okCount + nonOwnerCount).toBeGreaterThanOrEqual(99);
+      // At least 1 owner succeeded
+      expect(okCount).toBeGreaterThanOrEqual(1);
+      // ALL 100 requests are classified
+      expect(okCount + nonOwnerCount).toBe(100);
 
       // DB: exactly 1 ProviderAcceptanceAttempt
       const claimCount = await db.providerAcceptanceAttempt.count({

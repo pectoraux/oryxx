@@ -156,7 +156,12 @@ describe("ORYXX Live Supply Information-Value Experiment", () => {
 
   // ─── G. STALE INVENTORY FILTERED ────────────────────────────────
   test("stale observations are excluded by ORYXX (marked STALE, not selectable)", () => {
-    const tightConfig = { ...baseConfig, freshnessWindowSec: 1 };
+    // Use a future snapshot timestamp so stations are stale
+    const tightConfig: ExperimentConfig = {
+      ...baseConfig,
+      snapshotTimestamp: "2026-08-21T16:53:30Z", // 1 hour later
+      freshnessWindowSec: 60,
+    };
     const result = runLiveSupplyExperiment(tightConfig);
     expect(result.freshness.stationsExpired).toBeGreaterThan(0);
     // ORYXX should not route via stale stations
@@ -290,6 +295,75 @@ describe("ORYXX Live Supply Information-Value Experiment", () => {
     }
     // Some demands should have stations within walking distance
     expect(result.demandsWithStation).toBeGreaterThan(0);
+  });
+
+  // ─── UNKNOWN-INVENTORY INVARIANT ────────────────────────────────
+  test("UNKNOWN-inventory invariant: ORYXX == baseline when all stations stale", () => {
+    // If all stations are stale (observation timestamp outside freshness
+    // window), ORYXX cannot determine availability and should become
+    // equivalent to baseline (0 newly discoverable routes).
+    // Use a snapshot timestamp far in the future so all stations are stale.
+    const staleConfig: ExperimentConfig = {
+      ...baseConfig,
+      snapshotTimestamp: "2026-08-21T16:53:30Z", // 1 hour after snapshot
+      freshnessWindowSec: 60, // 1 minute freshness
+    };
+    const result = runLiveSupplyExperiment(staleConfig);
+    // All stations should be stale (1 hour old, freshness = 1 minute)
+    expect(result.freshness.stationsExpired).toBe(result.stationCount);
+    // ORYXX should find 0 newly discoverable
+    expect(result.routeLevel.newlyDiscoverableCount).toBe(0);
+    // No station should be OBSERVED_AVAILABLE_AT_T
+    for (const dr of result.demandResults) {
+      for (const route of dr.oryxx.allRoutes) {
+        if (route.type === "bike_share") {
+          expect(route.availabilityStatus).not.toBe("OBSERVED_AVAILABLE_AT_T");
+        }
+      }
+    }
+  });
+
+  // ─── NEWLY DISCOVERABLE FALSE POSITIVES ──────────────────────────
+  test("newly discoverable is NOT triggered by different routing modes", () => {
+    // Both strategies have the SAME routing modes (walk + bike).
+    // The only difference is inventory info. A newly discoverable route
+    // must be caused by inventory, not by mode availability.
+    const result = runLiveSupplyExperiment(baseConfig);
+    for (const dr of result.demandResults) {
+      if (dr.comparison.newlyDiscoverable) {
+        // Both strategies MUST have bike_share routes enumerated
+        const baselineHasBikeRoute = dr.baseline.allRoutes.some((r) => r.type === "bike_share");
+        const oryxxHasBikeRoute = dr.oryxx.allRoutes.some((r) => r.type === "bike_share");
+        expect(baselineHasBikeRoute).toBe(true); // baseline ALSO has bike routes
+        expect(oryxxHasBikeRoute).toBe(true);
+        // The difference is that ORYXX's route was selectable (OBSERVED_AVAILABLE)
+        // while baseline's was UNKNOWN (with uncertainty penalty)
+        expect(dr.oryxx.bestRoute.availabilityStatus).toBe("OBSERVED_AVAILABLE_AT_T");
+        expect(dr.baseline.bestRoute.type).not.toBe("bike_share"); // baseline chose walk
+      }
+    }
+  });
+
+  test("newly discoverable is NOT triggered by stale data", () => {
+    // If ALL stations are stale, ORYXX should NOT find newly discoverable routes
+    const staleConfig: ExperimentConfig = {
+      ...baseConfig,
+      snapshotTimestamp: "2026-08-21T16:53:30Z", // 1 hour after snapshot
+      freshnessWindowSec: 60, // 1 minute freshness
+    };
+    const result = runLiveSupplyExperiment(staleConfig);
+    // With all stations stale, ORYXX can't use them
+    expect(result.routeLevel.newlyDiscoverableCount).toBe(0);
+  });
+
+  test("newly discoverable is NOT triggered when baseline penalty is zero", () => {
+    // If baseline has NO uncertainty penalty, it should also select bike routes
+    // (same as ORYXX) → 0 newly discoverable
+    const noPenaltyConfig = { ...baseConfig, baselineUncertaintyPenaltyMin: 0 };
+    const result = runLiveSupplyExperiment(noPenaltyConfig);
+    // With zero penalty, baseline selects the same routes as ORYXX
+    // (both choose the fastest route regardless of availability info)
+    expect(result.routeLevel.newlyDiscoverableCount).toBe(0);
   });
 });
 

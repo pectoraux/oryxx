@@ -1491,16 +1491,15 @@ export async function POST(req: Request) {
     }
 
     // ── STEP 2: Verify offer is still BUYER_ACCEPTED ─────────────────
+    // This is a pre-claim check. If the offer is no longer BUYER_ACCEPTED,
+    // it means another request already finalized it (PROVIDER_ACCEPTED,
+    // REJECTED, EXPIRED). These are all concurrency conflicts (409), not
+    // client errors (400).
     if (offer.status !== "BUYER_ACCEPTED") {
-      if (offer.status === "PROVIDER_ACCEPTED") {
-        return NextResponse.json({
-          error: "Offer already accepted by another request.",
-        }, { status: 409 });
-      }
-      return NextResponse.json(
-        { error: `Offer is in status ${offer.status}; only BUYER_ACCEPTED offers can be provider-accepted.` },
-        { status: 400 },
-      );
+      return NextResponse.json({
+        error: `Offer is in status ${offer.status}; cannot provider-accept (already finalized by another request).`,
+        currentStatus: offer.status,
+      }, { status: 409 });
     }
 
     // ── STEP 3: ATOMICALLY claim PENDING → SUBMITTED ────────────────

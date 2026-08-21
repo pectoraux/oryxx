@@ -272,18 +272,21 @@ function enumerateRoutes(
 
     if (hasLiveInventory) {
       // ORYXX: has live inventory data
-      const stationTime = new Date(station.timestamp).getTime();
+      // Normalize timestamp: CityBik.es returns "2026-08-21T15:53:28.609381+00:00Z"
+      // which JavaScript's Date can't parse. Strip the +00:00 before Z.
+      const cleanTs = station.timestamp.replace(/\+00:00Z$/, "Z").replace(/\+00:00$/, "Z");
+      const stationTime = new Date(cleanTs).getTime();
       const ageSec = (snapshotTime - stationTime) / 1000;
       if (ageSec > config.freshnessWindowSec) {
         availability = "STALE";
         isSelectable = false; // ORYXX won't route via stale stations
         uncertaintyPenaltyMin = config.baselineUncertaintyPenaltyMin;
-      } else if (station.free_bikes > 0) {
+      } else if (station.free_bikes != null && station.free_bikes > 0) {
         availability = "OBSERVED_AVAILABLE_AT_T";
         isSelectable = true; // observed available → can select
         uncertaintyPenaltyMin = 0; // no penalty — observed at source time
       } else {
-        availability = "UNAVAILABLE"; // observed as 0 bikes
+        availability = "UNAVAILABLE"; // observed as 0 bikes or null
         isSelectable = false;
         uncertaintyPenaltyMin = config.baselineUncertaintyPenaltyMin;
       }
@@ -418,7 +421,8 @@ export function runLiveSupplyExperiment(config: ExperimentConfig): ExperimentRes
   let stationsWithinFreshness = 0;
   let stationsExpired = 0;
   for (const station of snapshot.stations) {
-    const stationTime = new Date(station.timestamp).getTime();
+    const cleanTs = station.timestamp.replace(/\+00:00Z$/, "Z").replace(/\+00:00$/, "Z");
+    const stationTime = new Date(cleanTs).getTime();
     const ageSec = (snapshotTime - stationTime) / 1000;
     if (ageSec <= config.freshnessWindowSec) stationsWithinFreshness++;
     else stationsExpired++;
