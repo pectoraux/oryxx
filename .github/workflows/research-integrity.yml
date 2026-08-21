@@ -189,6 +189,17 @@ jobs:
           DATABASE_URL: ${{ env.DATABASE_URL }}
           DIRECT_URL: ${{ env.DIRECT_URL }}
 
+      # ─── TWO-SIDED MARKETPLACE TESTS ──────────────────────────────────
+      # Tests the two-sided transaction spine: buyer_accept → provider_accept
+      # → agreement → payment → execution. Verifies that buyer acceptance
+      # does NOT create an agreement, provider must explicitly accept,
+      # payment/execution are gated on ACTIVE agreement.
+      - name: Two-sided marketplace tests (buyer/provider separation)
+        run: bun test tests/oryxx-marketplace-twosided.test.ts --timeout 120000
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          DIRECT_URL: ${{ env.DIRECT_URL }}
+
       # ─── LINT ───────────────────────────────────────────────────────
       - name: Lint
         run: bun run lint

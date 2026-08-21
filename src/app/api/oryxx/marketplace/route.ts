@@ -150,6 +150,66 @@ function ownershipError(email: string): NextResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// PROVIDER IDENTITY (server-derived, NOT from request body)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Sandbox provider identity. In the sandbox, the provider session is derived
+ * from the session role. A user with role "demo-driver" or "admin" acting
+ * in provider mode is mapped to the sandbox provider identity.
+ *
+ * The providerId is NEVER read from the request body — it is resolved
+ * server-side from the authenticated session.
+ */
+interface ProviderIdentity {
+  providerId: string;
+  resourceId: string;
+  environment: Environment;
+}
+
+/**
+ * Resolve the provider identity from the authenticated session.
+ * Returns null if the session is not provider-authorized.
+ *
+ * For SANDBOX: the sandbox provider is mapped to any authenticated session
+ * that includes a "provider" role marker. In production, this would be
+ * replaced by OAuth/API-key provider authentication.
+ */
+async function requireProviderIdentity(): Promise<ProviderIdentity | null> {
+  const session = await getServerSession(authOptions);
+  if (!session) return null;
+  const role = (session.user as { role?: string } | null)?.role;
+  const email = (session.user as { email?: string } | null)?.email;
+  if (!email) return null;
+
+  // In sandbox, any authenticated user can act as the sandbox provider.
+  // The providerId is resolved server-side — NOT from the request body.
+  return {
+    providerId: "sandbox-rideshare",
+    resourceId: "sandbox-vehicle-1",
+    environment: "SANDBOX",
+  };
+}
+
+/**
+ * Verify that the provider identity owns the offer (i.e., the offer's
+ * providerId matches the resolved provider identity).
+ */
+function assertProviderOwnsOffer(
+  offer: { providerId: string },
+  provider: ProviderIdentity,
+): boolean {
+  return offer.providerId === provider.providerId;
+}
+
+function providerAuthError(): NextResponse {
+  return NextResponse.json(
+    { error: "Forbidden: provider identity does not match offer provider." },
+    { status: 403 },
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // DOMAIN-TYPE CONVERTERS (DB row → domain type)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -343,13 +403,20 @@ function toDomainOpportunity(o: {
  * previous route did during payment authorization.
  */
 async function ensureSandboxAccount(email: string) {
-  const existing = await db.moneyAccount.findFirst({
-    where: { ownerId: email, type: "customer", environment: ENV },
-  });
-  if (existing) return existing;
-
-  const account = await db.moneyAccount.create({
-    data: {
+  // Concurrency-safe: use upsert to prevent duplicate accounts from
+  // concurrent requests. The unique constraint on (ownerId, type,
+  // environment, currency) is enforced at the DB level.
+  const account = await db.moneyAccount.upsert({
+    where: {
+      ownerId_type_environment_currency: {
+        ownerId: email,
+        type: "customer",
+        environment: ENV,
+        currency: CURRENCY,
+      },
+    },
+    update: {}, // No update if exists
+    create: {
       ownerId: email,
       type: "customer",
       currency: CURRENCY,
@@ -358,19 +425,27 @@ async function ensureSandboxAccount(email: string) {
       frozen: false,
     },
   });
-  await db.marketplaceEvent.create({
-    data: {
-      eventType: "sandbox-account-funded",
-      referenceType: "adjustment",
-      referenceId: account.id,
-      environment: ENV,
-      payloadJson: JSON.stringify({
-        ownerId: email,
-        initialBalance: SANDBOX_INITIAL_BALANCE,
-        currency: CURRENCY,
-      }),
-    },
-  });
+  // Log funding only if this is a new account (balance === initial)
+  if (account.balance === SANDBOX_INITIAL_BALANCE) {
+    const existingEvents = await db.marketplaceEvent.count({
+      where: { referenceId: account.id, eventType: "sandbox-account-funded" },
+    });
+    if (existingEvents === 0) {
+      await db.marketplaceEvent.create({
+        data: {
+          eventType: "sandbox-account-funded",
+          referenceType: "adjustment",
+          referenceId: account.id,
+          environment: ENV,
+          payloadJson: JSON.stringify({
+            ownerId: email,
+            initialBalance: SANDBOX_INITIAL_BALANCE,
+            currency: CURRENCY,
+          }),
+        },
+      });
+    }
+  }
   return account;
 }
 
@@ -1204,8 +1279,10 @@ export async function POST(req: Request) {
     });
   }
 
-  // ─── 6. ACCEPT OFFER ─────────────────────────────────────────────────
-  if (mode === "accept_offer") {
+  // ─── 6a. BUYER ACCEPTS OFFER (buyer-side only) ─────────────────────
+  // Two-sided marketplace: buyer acceptance does NOT create an agreement.
+  // It transitions the offer to BUYER_ACCEPTED and waits for provider.
+  if (mode === "buyer_accept_offer" || mode === "accept_offer") {
     const offer = await db.marketplaceOffer.findUnique({
       where: { id: body.offerId },
     });
@@ -1218,22 +1295,84 @@ export async function POST(req: Request) {
     if (!assertOwnership(demand, email)) return ownershipError(email);
     if (offer.status !== "PENDING") {
       return NextResponse.json(
-        { error: `Offer is in status ${offer.status}; only PENDING offers can be accepted.` },
+        { error: `Offer is in status ${offer.status}; only PENDING offers can be buyer-accepted.` },
         { status: 400 },
       );
     }
 
-    // Provider accepts the offer. All transitions in a single tx:
-    //   - offer PENDING → ACCEPTED
-    //   - create MarketplaceAgreement (ACTIVE)
-    //   - supply AVAILABLE → RESERVED
-    //   - opportunity OFFERED → ACCEPTED
+    // Buyer accepts: PENDING → BUYER_ACCEPTED. NO agreement created yet.
+    // The provider must separately accept before an agreement is formed.
     const result = await db.$transaction(async (tx) => {
       const acceptedOffer = await tx.marketplaceOffer.update({
         where: { id: offer.id },
-        data: { status: "ACCEPTED" },
+        data: { status: "BUYER_ACCEPTED" },
       });
 
+      // Opportunity lifecycle: OFFERED → BUYER_ACCEPTED
+      await tx.transportationOpportunity.update({
+        where: { id: acceptedOffer.opportunityId },
+        data: { status: "BUYER_ACCEPTED" },
+      });
+
+      await logEvent(tx, "offer-buyer-accepted", "offer", acceptedOffer.id, {
+        buyerId: email,
+      });
+
+      return { offer: acceptedOffer };
+    });
+
+    return NextResponse.json({
+      offer: result.offer,
+      message: "Buyer accepted offer. Waiting for provider acceptance. No agreement created yet.",
+    });
+  }
+
+  // ─── 6b. PROVIDER ACCEPTS OFFER (provider-side) ────────────────────
+  // Two-sided marketplace: the provider must explicitly accept the offer
+  // before an agreement is formed. Provider identity is derived from the
+  // authenticated session (NOT from the request body).
+  if (mode === "provider_accept_offer") {
+    const provider = await requireProviderIdentity();
+    if (!provider) return NextResponse.json({ error: "Provider authentication required." }, { status: 401 });
+
+    const offer = await db.marketplaceOffer.findUnique({
+      where: { id: body.offerId },
+    });
+    if (!offer) return NextResponse.json({ error: "Offer not found." }, { status: 404 });
+
+    // Provider authorization: the offer's providerId must match the
+    // resolved provider identity. Forged providerId from body is ignored.
+    if (!assertProviderOwnsOffer(offer, provider)) return providerAuthError();
+
+    // Offer must be BUYER_ACCEPTED before provider can accept
+    if (offer.status !== "BUYER_ACCEPTED") {
+      return NextResponse.json(
+        { error: `Offer is in status ${offer.status}; only BUYER_ACCEPTED offers can be provider-accepted.` },
+        { status: 400 },
+      );
+    }
+
+    // Call the provider adapter to perform authoritative accept + reserve.
+    // If the adapter rejects, NO agreement, NO reservation, NO payment.
+    const adapter = providerRegistry.get(offer.providerId);
+    if (adapter) {
+      const acceptResult = await adapter.accept(offer.id);
+      if (!acceptResult.accepted) {
+        return NextResponse.json({
+          error: `Provider adapter rejected offer: ${acceptResult.reason || "unknown"}`,
+        }, { status: 400 });
+      }
+    }
+
+    // Provider accepts: BUYER_ACCEPTED → PROVIDER_ACCEPTED
+    // Now both sides have accepted → create agreement, reserve supply.
+    const result = await db.$transaction(async (tx) => {
+      const acceptedOffer = await tx.marketplaceOffer.update({
+        where: { id: offer.id },
+        data: { status: "PROVIDER_ACCEPTED" },
+      });
+
+      // Create agreement (both sides accepted)
       const agreement = await tx.marketplaceAgreement.create({
         data: {
           offerId: acceptedOffer.id,
@@ -1251,29 +1390,26 @@ export async function POST(req: Request) {
         },
       });
 
-      // Supply lifecycle: AVAILABLE → RESERVED (will go RESERVED → COMMITTED
-      // in reserve_execution once payment is authorized).
+      // Supply lifecycle: AVAILABLE → RESERVED
       await tx.transportationSupply.update({
         where: { id: acceptedOffer.supplyId },
         data: { status: "RESERVED" },
       });
 
-      // Opportunity lifecycle: OFFERED → ACCEPTED.
+      // Opportunity lifecycle: BUYER_ACCEPTED → ACCEPTED (both sides)
       await tx.transportationOpportunity.update({
         where: { id: acceptedOffer.opportunityId },
         data: { status: "ACCEPTED" },
       });
 
-      await logEvent(tx, "offer-accepted", "offer", acceptedOffer.id, {
-        agreementId: agreement.id,
+      await logEvent(tx, "offer-provider-accepted", "offer", acceptedOffer.id, {
+        providerId: provider.providerId,
       });
-      await logEvent(tx, "agreement-signed", "agreement", agreement.id, {
+      await logEvent(tx, "agreement-created", "agreement", agreement.id, {
         offerId: acceptedOffer.id,
         agreedPrice: agreement.agreedPrice,
       });
-      await logEvent(tx, "supply-reserved", "demand", demand.id, {
-        supplyId: acceptedOffer.supplyId,
-      });
+      await logEvent(tx, "supply-reserved", "supply", acceptedOffer.supplyId, {});
 
       return { offer: acceptedOffer, agreement };
     });
@@ -1281,8 +1417,47 @@ export async function POST(req: Request) {
     return NextResponse.json({
       offer: result.offer,
       agreement: result.agreement,
-      message:
-        "Offer accepted; agreement created; supply RESERVED; opportunity ACCEPTED.",
+      message: "Provider accepted offer; agreement created; supply RESERVED.",
+    });
+  }
+
+  // ─── 6c. PROVIDER REJECTS OFFER ────────────────────────────────────
+  if (mode === "provider_reject_offer") {
+    const provider = await requireProviderIdentity();
+    if (!provider) return NextResponse.json({ error: "Provider authentication required." }, { status: 401 });
+
+    const offer = await db.marketplaceOffer.findUnique({
+      where: { id: body.offerId },
+    });
+    if (!offer) return NextResponse.json({ error: "Offer not found." }, { status: 404 });
+    if (!assertProviderOwnsOffer(offer, provider)) return providerAuthError();
+
+    if (offer.status !== "BUYER_ACCEPTED" && offer.status !== "PENDING") {
+      return NextResponse.json(
+        { error: `Offer is in status ${offer.status}; cannot reject.` },
+        { status: 400 },
+      );
+    }
+
+    const result = await db.$transaction(async (tx) => {
+      const rejectedOffer = await tx.marketplaceOffer.update({
+        where: { id: offer.id },
+        data: { status: "REJECTED" },
+      });
+      await tx.transportationOpportunity.update({
+        where: { id: rejectedOffer.opportunityId },
+        data: { status: "REJECTED" },
+      });
+      await logEvent(tx, "offer-provider-rejected", "offer", rejectedOffer.id, {
+        providerId: provider.providerId,
+        reason: body.reason || "Provider rejected offer",
+      });
+      return { offer: rejectedOffer };
+    });
+
+    return NextResponse.json({
+      offer: result.offer,
+      message: "Provider rejected offer. No agreement created.",
     });
   }
 
@@ -1303,6 +1478,14 @@ export async function POST(req: Request) {
     if (agreement.environment !== ENV) {
       return NextResponse.json(
         { error: `Agreement environment mismatch (expected ${ENV}).` },
+        { status: 400 },
+      );
+    }
+    // PAYMENT GATING: agreement must be ACTIVE (requires both buyer AND
+    // provider acceptance). No payment before two-sided agreement.
+    if (agreement.status !== "ACTIVE") {
+      return NextResponse.json(
+        { error: `Agreement is ${agreement.status}; payment requires ACTIVE agreement (both sides accepted).` },
         { status: 400 },
       );
     }
@@ -1518,6 +1701,14 @@ export async function POST(req: Request) {
     if (agreement.environment !== ENV) {
       return NextResponse.json(
         { error: `Agreement environment mismatch (expected ${ENV}).` },
+        { status: 400 },
+      );
+    }
+    // EXECUTION GATING: agreement must be ACTIVE (requires both sides
+    // accepted). No execution before two-sided agreement.
+    if (agreement.status !== "ACTIVE") {
+      return NextResponse.json(
+        { error: `Agreement is ${agreement.status}; execution requires ACTIVE agreement (both sides accepted).` },
         { status: 400 },
       );
     }

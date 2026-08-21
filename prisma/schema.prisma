@@ -437,6 +437,7 @@ model MoneyAccount {
 
   @@index([ownerId])
   @@index([environment])
+  @@unique([ownerId, type, environment, currency])
 }
 
 model LedgerEntry {
