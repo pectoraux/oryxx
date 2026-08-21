@@ -237,6 +237,16 @@ jobs:
         env:
           DATABASE_URL: ${{ env.DATABASE_URL }}
 
+      # ─── LIVE SUPPLY EXPERIMENT TESTS ───────────────────────────────
+      # Tests the live supply experiment module against a captured
+      # LIVE_OBSERVATION_SNAPSHOT. Verifies provenance isolation,
+      # snapshot reproducibility, freshness filtering, and that the
+      # experiment CANNOT produce W3-M/W4-M.
+      - name: Live supply experiment tests (snapshot-based, no live API)
+        run: bun test tests/oryxx-live-supply.test.ts --timeout 60000
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
       # ─── LINT ───────────────────────────────────────────────────────
       - name: Lint
         run: bun run lint
