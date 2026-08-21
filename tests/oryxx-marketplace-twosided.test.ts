@@ -828,6 +828,12 @@ describe("ORYXX two-sided marketplace — buyer_accept / provider_accept spine",
         provider,
       );
 
+      // Payment must precede execution (DEFECT 3 fix)
+      const auth = await authorizePayment(buyer, agreementId);
+      expect(auth.status).toBe(200);
+      const paymentIntentId = auth.body.paymentIntent.id;
+      await capturePayment(buyer, paymentIntentId);
+
       const res = await reserveExecution(buyer, agreementId);
       expect(res.status).toBe(200);
       const executionId = res.body.execution.id;
