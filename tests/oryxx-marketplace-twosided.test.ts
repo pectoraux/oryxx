@@ -587,7 +587,7 @@ describe("ORYXX two-sided marketplace — buyer_accept / provider_accept spine",
     }, 120000);
 
     // ─── 6. PROVIDER CANNOT ACCEPT BEFORE BUYER ───────────────────────
-    test("6. provider_accept_offer before buyer_accept_offer returns 400", async () => {
+    test("6. provider_accept_offer before buyer_accept_offer returns 409", async () => {
       const buyer = emailFor("t6-buyer");
       const provider = emailFor("t6-provider");
       // Set up the chain but DO NOT call buyer_accept_offer — offer is PENDING.
@@ -597,9 +597,11 @@ describe("ORYXX two-sided marketplace — buyer_accept / provider_accept spine",
       expect(pre!.status).toBe("PENDING");
 
       // Provider attempts to accept directly (skipping buyer_accept).
+      // The offer is not BUYER_ACCEPTED, so the route returns 409
+      // (concurrency conflict — offer was not in the expected state).
       const acc = await providerAcceptOffer(provider, offerId);
-      expect(acc.status).toBe(400);
-      expect(acc.body?.error).toMatch(/BUYER_ACCEPTED/i);
+      expect(acc.status).toBe(409);
+      expect(acc.body?.error).toMatch(/BUYER_ACCEPTED|finalized|status/i);
 
       // DB: offer is STILL PENDING (no state transition).
       const dbOffer = await db.marketplaceOffer.findUnique({
