@@ -167,6 +167,28 @@ jobs:
           DATABASE_URL: ${{ env.DATABASE_URL }}
           DIRECT_URL: ${{ env.DIRECT_URL }}
 
+      # ─── MARKETPLACE UNIT TESTS ────────────────────────────────────
+      # Tests the live marketplace engine layer: domain types, provider
+      # adapters, opportunity engine, market clearing, negotiation, money
+      # ledger, execution engine, agent framework, global graph.
+      - name: Marketplace unit tests (no DB)
+        run: bun test tests/oryxx-marketplace.test.ts
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      # ─── MARKETPLACE HTTP INTEGRATION TESTS ───────────────────────
+      # Invokes the ACTUAL marketplace route handler with real Request
+      # objects against real PostgreSQL. Tests the full sandbox transaction
+      # spine: demand → supply → opportunities → clear → negotiate → accept
+      # → authorize → capture → reserve → dispatch → complete.
+      # Verifies authorization, idempotency, DB-backed ledger, evidence
+      # boundary (sandbox cannot produce W3-M/W4-M).
+      - name: Marketplace HTTP integration tests (sandbox transaction spine)
+        run: bun test tests/oryxx-marketplace-http.test.ts --timeout 120000
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          DIRECT_URL: ${{ env.DIRECT_URL }}
+
       # ─── LINT ───────────────────────────────────────────────────────
       - name: Lint
         run: bun run lint
