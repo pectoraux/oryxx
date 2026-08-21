@@ -2083,6 +2083,12 @@ export async function POST(req: Request) {
     let verified = false;
     let providerCompletedAt: string | undefined;
     if (provider && providerExecutionId) {
+      // Advance the sandbox provider's internal state by calling getStatus().
+      // The sandbox provider progresses EN_ROUTE → PICKED_UP → COMPLETED
+      // on each getStatus() call. This simulates the provider observing
+      // the execution progressing through its lifecycle.
+      await provider.getStatus(providerExecutionId);
+      await provider.getStatus(providerExecutionId);
       const verifyResult = await provider.verifyCompletion(providerExecutionId);
       verified = verifyResult.verified;
       providerCompletedAt = verifyResult.completedAt;

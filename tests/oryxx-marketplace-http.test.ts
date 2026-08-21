@@ -1044,6 +1044,7 @@ describe("ORYXX HTTP-level marketplace — production route", () => {
         ...domainExec,
         environment: "LIVE",
         evidenceEligible: true,
+        state: "COMPLETED",
       };
       const liveEvidence = canProduceMarketplaceEvidence(liveLike);
       expect(liveEvidence.w3m).toBe(true);
