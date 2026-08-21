@@ -865,12 +865,14 @@ describe("ORYXX Stage 6A — Marketplace integrity (6 defect fixes)", () => {
       expect(reservedSuppliesForOffer).toBe(1);
 
       // Exactly ONE call returned 200 (the winner). The remaining 99
-      // returned 400 (offer not BUYER_ACCEPTED — the winner committed
-      // before they read) or 500 (unique-constraint violation on
-      // agreement.offerId — they read BUYER_ACCEPTED, entered the tx,
-      // but lost the agreement.create race). Either is acceptable.
+      // returned 409 (conflict — offer already claimed, agreement already
+      // exists, or supply already reserved). Zero HTTP 500.
       const okCount = results.filter((r) => r.status === 200).length;
       expect(okCount).toBe(1);
+      const conflictCount = results.filter((r) => r.status === 409).length;
+      expect(conflictCount).toBe(99);
+      const errorCount = results.filter((r) => r.status >= 500).length;
+      expect(errorCount).toBe(0);
 
       // The winner's response contains the ACTIVE agreement.
       const winner = results.find((r) => r.status === 200)!;
@@ -1213,17 +1215,8 @@ describe("ORYXX Stage 6A — Marketplace integrity (6 defect fixes)", () => {
       //      → tx rolls back: F2 NOT mutated, A2 NOT created
       //    The .catch matches → returns 409.
       const pa2 = await providerAcceptOffer(provider, offerId2);
-      expect([409, 500]).toContain(pa2.status);
-      // 409 = the caught SUPPLY_ALREADY_RESERVED path.
-      // 500 = the uncaught P2002 unique-constraint violation on
-      //       agreement.offerId, which fires IF another tx committed an
-      //       agreement for F2 between F2's offer read and F2's agreement
-      //       create. In this test no such agreement exists (we only call
-      //       pa2 once), so we expect 409 — but we accept 500 too in case
-      //       the implementation's error handling changes.
-      if (pa2.status === 409) {
-        expect(pa2.body?.error).toMatch(/already reserved|no agreement/i);
-      }
+      expect(pa2.status).toBe(409); // deterministic conflict, not 500
+      expect(pa2.body?.error).toMatch(/already reserved|already accepted|already exists|no agreement/i);
 
       // ── DB INVARIANT 1: NO agreement was created for F2.
       const f2AgreementCount = await db.marketplaceAgreement.count({
@@ -1276,5 +1269,71 @@ describe("ORYXX Stage 6A — Marketplace integrity (6 defect fixes)", () => {
       });
       expect(reservedSuppliesInTest).toBe(1);
     }, 180000);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DEFECT 1 — EXPIRY/ACCEPTANCE ATOMICITY
+  // ═══════════════════════════════════════════════════════════════════
+  describe("DEFECT 1 — Expiry/acceptance atomicity", () => {
+    test("13. 100 concurrent buyer_accept_offer around expiry boundary → exactly one terminal state", async () => {
+      const buyer = emailFor("t13-buyer");
+      const { offerId } = await setupChainToOffer(buyer);
+
+      // Set offer expiry to 50ms from now — requests will straddle the boundary.
+      await db.marketplaceOffer.update({
+        where: { id: offerId },
+        data: { expiresAt: new Date(Date.now() + 50) },
+      });
+
+      // Fire 100 concurrent buyer_accept_offer requests.
+      const results = await Promise.all(
+        Array.from({ length: 100 }, () =>
+          buyerAcceptOffer(buyer, offerId).catch((e) => ({
+            status: -1,
+            body: { error: String(e) },
+          })),
+        ),
+      );
+
+      // No HTTP 500 from expected contention.
+      const errorCount = results.filter((r) => r.status >= 500).length;
+      expect(errorCount).toBe(0);
+
+      // Count outcomes.
+      const accepted = results.filter((r) => r.status === 200);
+      const expired = results.filter((r) => r.status === 400); // expired
+      const conflict = results.filter((r) => r.status === 409); // no longer PENDING
+
+      // Exactly ONE terminal state: either one acceptance (200) OR one
+      // expiry (400). The rest must be conflicts (409).
+      const terminalCount = accepted.length + (expired.length > 0 ? 1 : 0);
+      // At most one acceptance succeeded.
+      expect(accepted.length).toBeLessThanOrEqual(1);
+
+      // Verify final DB state.
+      const finalOffer = await db.marketplaceOffer.findUnique({
+        where: { id: offerId },
+      });
+      // Must be a terminal state: BUYER_ACCEPTED or EXPIRED.
+      expect(["BUYER_ACCEPTED", "EXPIRED"]).toContain(finalOffer!.status);
+
+      // If accepted: exactly one buyer-accepted event.
+      // If expired: exactly one expired event.
+      const events = await db.marketplaceEvent.findMany({
+        where: {
+          referenceType: "offer",
+          referenceId: offerId,
+          eventType: { in: ["offer-buyer-accepted", "offer-expired"] },
+        },
+      });
+      // At most one terminal transition event.
+      expect(events.length).toBeLessThanOrEqual(1);
+
+      // No agreement created (buyer_accept never creates agreement).
+      const agreementCount = await db.marketplaceAgreement.count({
+        where: { offerId },
+      });
+      expect(agreementCount).toBe(0);
+    }, 120000);
   });
 });

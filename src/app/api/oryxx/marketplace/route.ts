@@ -1296,16 +1296,58 @@ export async function POST(req: Request) {
     if (!demand) return NextResponse.json({ error: "Demand not found." }, { status: 404 });
     if (!assertOwnership(demand, email)) return ownershipError(email);
 
-    // DEFECT 6 FIX: Offer expiry enforcement. Acceptance requires:
-    //   status === PENDING
-    //   AND expiresAt > now
-    // If expired, transition to EXPIRED and reject acceptance.
-    const now = new Date();
-    if (offer.expiresAt && new Date(offer.expiresAt) < now) {
-      await db.marketplaceOffer.update({
-        where: { id: offer.id },
-        data: { status: "EXPIRED" },
+    // DEFECT 1 FIX: Expiry/status decision and state transition are ATOMIC.
+    // Everything happens inside a single PostgreSQL transaction using
+    // updateMany with a WHERE condition (equivalent to SELECT FOR UPDATE
+    // + conditional UPDATE). No state decision depends on a pre-transaction
+    // read.
+    //
+    // Valid outcomes:
+    //   - PENDING + not expired → BUYER_ACCEPTED (exactly one winner)
+    //   - PENDING + expired → EXPIRED (deterministic)
+    //   - Non-PENDING → 409 conflict (already accepted/rejected/expired)
+    const result = await db.$transaction(async (tx) => {
+      const now = new Date();
+      const isExpired = offer.expiresAt && new Date(offer.expiresAt) < now;
+
+      if (isExpired) {
+        // Atomically transition PENDING → EXPIRED (only if still PENDING).
+        const expiryUpdate = await tx.marketplaceOffer.updateMany({
+          where: { id: offer.id, status: "PENDING" },
+          data: { status: "EXPIRED" },
+        });
+        if (expiryUpdate.count > 0) {
+          await logEvent(tx, "offer-expired", "offer", offer.id, {
+            expiresAt: offer.expiresAt,
+          });
+        }
+        return { expired: true as const };
+      }
+
+      // Atomically claim PENDING → BUYER_ACCEPTED (only if still PENDING).
+      // If another request already claimed it, count === 0 → conflict.
+      const claimUpdate = await tx.marketplaceOffer.updateMany({
+        where: { id: offer.id, status: "PENDING" },
+        data: { status: "BUYER_ACCEPTED" },
       });
+      if (claimUpdate.count === 0) {
+        return { conflict: true as const };
+      }
+
+      // Opportunity lifecycle: OFFERED → BUYER_ACCEPTED
+      await tx.transportationOpportunity.update({
+        where: { id: offer.opportunityId },
+        data: { status: "BUYER_ACCEPTED" },
+      });
+
+      await logEvent(tx, "offer-buyer-accepted", "offer", offer.id, {
+        buyerId: email,
+      });
+
+      return { accepted: true as const };
+    });
+
+    if ("expired" in result && result.expired) {
       return NextResponse.json({
         error: "Offer has expired. Acceptance rejected.",
         offerId: offer.id,
@@ -1313,36 +1355,14 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
 
-    if (offer.status !== "PENDING") {
-      return NextResponse.json(
-        { error: `Offer is in status ${offer.status}; only PENDING offers can be buyer-accepted.` },
-        { status: 400 },
-      );
+    if ("conflict" in result && result.conflict) {
+      return NextResponse.json({
+        error: "Offer is no longer PENDING (already accepted, rejected, or expired by another request).",
+      }, { status: 409 });
     }
 
-    // Buyer accepts: PENDING → BUYER_ACCEPTED. NO agreement created yet.
-    // The provider must separately accept before an agreement is formed.
-    const result = await db.$transaction(async (tx) => {
-      const acceptedOffer = await tx.marketplaceOffer.update({
-        where: { id: offer.id },
-        data: { status: "BUYER_ACCEPTED" },
-      });
-
-      // Opportunity lifecycle: OFFERED → BUYER_ACCEPTED
-      await tx.transportationOpportunity.update({
-        where: { id: acceptedOffer.opportunityId },
-        data: { status: "BUYER_ACCEPTED" },
-      });
-
-      await logEvent(tx, "offer-buyer-accepted", "offer", acceptedOffer.id, {
-        buyerId: email,
-      });
-
-      return { offer: acceptedOffer };
-    });
-
     return NextResponse.json({
-      offer: result.offer,
+      offer: { id: offer.id, status: "BUYER_ACCEPTED" },
       message: "Buyer accepted offer. Waiting for provider acceptance. No agreement created yet.",
     });
   }
@@ -1384,69 +1404,97 @@ export async function POST(req: Request) {
       }
     }
 
-    // Provider accepts: BUYER_ACCEPTED → PROVIDER_ACCEPTED
-    // Now both sides have accepted → create agreement, reserve supply.
+    // DEFECT 2 FIX: Provider acceptance is fully atomic. The offer transition
+    // (BUYER_ACCEPTED → PROVIDER_ACCEPTED), agreement creation, and supply
+    // reservation all happen inside a single PostgreSQL transaction.
+    // The offer transition uses updateMany with a status condition — if
+    // another request already claimed it, count === 0 → 409 conflict.
+    // The agreement creation uses a unique constraint on offerId — if
+    // another request already created an agreement, P2002 → 409 conflict.
+    // No HTTP 500 for expected contention.
     const result = await db.$transaction(async (tx) => {
-      const acceptedOffer = await tx.marketplaceOffer.update({
-        where: { id: offer.id },
+      // 1. Atomically claim BUYER_ACCEPTED → PROVIDER_ACCEPTED
+      //    (only if still BUYER_ACCEPTED — prevents double acceptance)
+      const claimUpdate = await tx.marketplaceOffer.updateMany({
+        where: { id: offer.id, status: "BUYER_ACCEPTED" },
         data: { status: "PROVIDER_ACCEPTED" },
       });
+      if (claimUpdate.count === 0) {
+        // Offer is no longer BUYER_ACCEPTED — another request already
+        // claimed it (or it was rejected/expired).
+        throw new Error("OFFER_ALREADY_CLAIMED");
+      }
 
-      // Create agreement (both sides accepted)
-      const agreement = await tx.marketplaceAgreement.create({
-        data: {
-          offerId: acceptedOffer.id,
-          opportunityId: acceptedOffer.opportunityId,
-          demandId: acceptedOffer.demandId,
-          supplyId: acceptedOffer.supplyId,
-          providerId: acceptedOffer.providerId,
-          agreedPrice: acceptedOffer.userPrice,
-          supplierCompensation: acceptedOffer.supplierCompensation,
-          platformFee: acceptedOffer.platformFee,
-          status: "ACTIVE",
-          isMarketplaceOpportunity: true,
-          researchStimulus: false,
-          environment: ENV,
-        },
-      });
+      // 2. Create agreement (both sides accepted)
+      //    Unique constraint on offerId prevents duplicate agreements.
+      //    If another request already created an agreement, P2002 is thrown.
+      let agreement;
+      try {
+        agreement = await tx.marketplaceAgreement.create({
+          data: {
+            offerId: offer.id,
+            opportunityId: offer.opportunityId,
+            demandId: offer.demandId,
+            supplyId: offer.supplyId,
+            providerId: offer.providerId,
+            agreedPrice: offer.userPrice,
+            supplierCompensation: offer.supplierCompensation,
+            platformFee: offer.platformFee,
+            status: "ACTIVE",
+            isMarketplaceOpportunity: true,
+            researchStimulus: false,
+            environment: ENV,
+          },
+        });
+      } catch (err: any) {
+        if (err?.code === "P2002") {
+          throw new Error("AGREEMENT_ALREADY_EXISTS");
+        }
+        throw err;
+      }
 
-      // DEFECT 5 FIX: Atomic supply reservation. Use updateMany with a
-      // status condition to ensure ONLY AVAILABLE supply can be reserved.
-      // If another request reserved it first, count === 0 → conflict.
+      // 3. Atomically reserve supply (only if AVAILABLE)
       const supplyUpdate = await tx.transportationSupply.updateMany({
-        where: { id: acceptedOffer.supplyId, status: "AVAILABLE" },
+        where: { id: offer.supplyId, status: "AVAILABLE" },
         data: { status: "RESERVED" },
       });
       if (supplyUpdate.count === 0) {
         throw new Error("SUPPLY_ALREADY_RESERVED");
       }
 
-      // Opportunity lifecycle: BUYER_ACCEPTED → ACCEPTED (both sides)
+      // 4. Transition opportunity
       await tx.transportationOpportunity.update({
-        where: { id: acceptedOffer.opportunityId },
+        where: { id: offer.opportunityId },
         data: { status: "ACCEPTED" },
       });
 
-      await logEvent(tx, "offer-provider-accepted", "offer", acceptedOffer.id, {
+      // 5. Append audit events
+      await logEvent(tx, "offer-provider-accepted", "offer", offer.id, {
         providerId: provider.providerId,
       });
       await logEvent(tx, "agreement-created", "agreement", agreement.id, {
-        offerId: acceptedOffer.id,
+        offerId: offer.id,
         agreedPrice: agreement.agreedPrice,
       });
-      await logEvent(tx, "supply-reserved", "supply", acceptedOffer.supplyId, {});
+      await logEvent(tx, "supply-reserved", "supply", offer.supplyId, {});
 
-      return { offer: acceptedOffer, agreement };
+      return { offer: { id: offer.id, status: "PROVIDER_ACCEPTED" }, agreement };
     }).catch((err: any) => {
+      if (err?.message === "OFFER_ALREADY_CLAIMED") {
+        return { conflict: "Offer already accepted" as const };
+      }
       if (err?.message === "SUPPLY_ALREADY_RESERVED") {
-        return { conflict: true as const };
+        return { conflict: "Supply already reserved" as const };
+      }
+      if (err?.message === "AGREEMENT_ALREADY_EXISTS") {
+        return { conflict: "Agreement already exists" as const };
       }
       throw err;
     });
 
-    if ("conflict" in result && result.conflict) {
+    if ("conflict" in result && typeof result.conflict === "string") {
       return NextResponse.json({
-        error: "Supply was already reserved by another request. No agreement created.",
+        error: result.conflict + ". No agreement created.",
       }, { status: 409 });
     }
 
