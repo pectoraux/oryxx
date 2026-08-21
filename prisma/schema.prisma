@@ -220,3 +220,327 @@ model ExperimentEvent {
   @@index([experimentId])
   @@index([offerId])
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// LIVE MARKETPLACE MODELS (Stage 6/7)
+// ═══════════════════════════════════════════════════════════════════════
+// These models are SEPARATE from the research instrument. Marketplace
+// transactions have isMarketplaceOpportunity=true, researchStimulus=false.
+// Sandbox/Fixture execution NEVER produces W3-M/W4-M evidence.
+
+model TransportationDemand {
+  id              String   @id @default(cuid())
+  source          String   // direct-user | shipper | fleet | enterprise | api-client
+  requestType     String   // rideshare | carpool | freight | transit-assisted | multimodal
+  kind            String   // person | people | parcel | pallet | container
+  originLat       Float
+  originLon       Float
+  originName      String?
+  destLat         Float
+  destLon         Float
+  destName        String?
+  windowStartSec  Int
+  windowEndSec    Int
+  latestArrivalSec Int
+  partySize       Int
+  weightKg        Float
+  volumeM3        Float
+  budget          Int      // minor units
+  value           Int      // minor units
+  priority        String   @default("normal")
+  constraintsJson String?  // JSON
+  status          String   @default("OPEN") // OPEN | MATCHED | IN_PROGRESS | COMPLETED | CANCELLED | EXPIRED
+  externalRef     String?
+  userId          String?
+  environment     String   @default("SANDBOX") // FIXTURE | SANDBOX | LIVE
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  opportunities   TransportationOpportunity[]
+  offers          MarketplaceOffer[]
+
+  @@index([status])
+  @@index([environment])
+  @@index([userId])
+}
+
+model TransportationSupply {
+  id              String   @id @default(cuid())
+  providerId      String
+  resourceId      String
+  mode            String   // rideshare | carpool | taxi | fhv | truck | transit
+  capacity        Int
+  availableCapacity Int
+  originLat       Float
+  originLon       Float
+  currentLat      Float?
+  currentLon      Float?
+  routeJson       String?  // JSON array of GeoPoints
+  stopsJson       String?  // JSON array of GeoPoints
+  departureStartSec Int
+  departureEndSec Int
+  availabilityStartSec Int
+  availabilityEndSec Int
+  costPerKm       Int      // minor units
+  costPerHour     Int
+  fixedCost       Int
+  minimumCompensation Int
+  detourToleranceKm Float
+  maxDetourKm     Float
+  maxExtraTimeMin Int
+  status          String   @default("AVAILABLE") // AVAILABLE | RESERVED | COMMITTED | EXPIRED | OFFLINE
+  source          String   // sandbox-provider | fixture-provider | etc.
+  externalRef     String?
+  environment     String   @default("SANDBOX")
+  provenanceJson  String?  // JSON Provenance
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  opportunities   TransportationOpportunity[]
+
+  @@index([providerId])
+  @@index([status])
+  @@index([environment])
+}
+
+model TransportationOpportunity {
+  id              String   @id @default(cuid())
+  demandId        String
+  supplyId        String
+  providerId      String
+  routeJson       String?  // JSON
+  distanceKm      Float
+  estimatedTimeMin Int
+  detourKm        Float
+  extraTimeMin    Int
+  capacityUsed    Int
+  price           Int      // minor units — user price
+  supplierCompensation Int
+  platformFee     Int
+  executionProbability Float
+  confidence      Float
+  status          String   @default("DISCOVERED")
+  whyFeasible     String
+  whyNow          String
+  whyThisSupply   String
+  whyOrdinaryMisses String
+  isMarketplaceOpportunity Boolean @default(true)
+  researchStimulus Boolean  @default(false)
+  environment     String   @default("SANDBOX")
+  provenanceJson  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  demand          TransportationDemand @relation(fields: [demandId], references: [id])
+  supply          TransportationSupply @relation(fields: [supplyId], references: [id])
+  offers          MarketplaceOffer[]
+  agreement       MarketplaceAgreement?
+  execution       TransportationExecution?
+
+  @@index([demandId])
+  @@index([supplyId])
+  @@index([status])
+  @@index([environment])
+}
+
+model MarketplaceOffer {
+  id              String   @id @default(cuid())
+  opportunityId   String   @unique
+  demandId        String
+  supplyId        String
+  providerId      String
+  userPrice       Int      // minor units
+  supplierCompensation Int
+  platformFee     Int
+  expiresAt       DateTime
+  status          String   @default("PENDING") // PENDING | ACCEPTED | REJECTED | EXPIRED
+  isMarketplaceOpportunity Boolean @default(true)
+  researchStimulus Boolean  @default(false)
+  environment     String   @default("SANDBOX")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  opportunity     TransportationOpportunity @relation(fields: [opportunityId], references: [id])
+  demand          TransportationDemand @relation(fields: [demandId], references: [id])
+  agreement       MarketplaceAgreement?
+
+  @@index([opportunityId])
+  @@index([demandId])
+  @@index([status])
+}
+
+model MarketplaceAgreement {
+  id              String   @id @default(cuid())
+  offerId         String   @unique
+  opportunityId   String   @unique
+  demandId        String
+  supplyId        String
+  providerId      String
+  agreedPrice     Int
+  supplierCompensation Int
+  platformFee     Int
+  status          String   @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED | BREACHED
+  isMarketplaceOpportunity Boolean @default(true)
+  researchStimulus Boolean  @default(false)
+  environment     String   @default("SANDBOX")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  offer           MarketplaceOffer @relation(fields: [offerId], references: [id])
+  opportunity     TransportationOpportunity @relation(fields: [opportunityId], references: [id])
+  execution       TransportationExecution?
+  paymentIntents  PaymentIntent[]
+
+  @@index([opportunityId])
+  @@index([status])
+}
+
+model TransportationExecution {
+  id              String   @id @default(cuid())
+  agreementId     String   @unique
+  opportunityId   String   @unique
+  demandId        String
+  supplyId        String
+  providerId      String
+  state           String   @default("OPPORTUNITY_CREATED")
+  environment     String   @default("SANDBOX")
+  evidenceEligible Boolean @default(false) // false for SANDBOX/FIXTURE
+  startedAt       DateTime?
+  completedAt     DateTime?
+  failureReason   String?
+  isMarketplaceOpportunity Boolean @default(true)
+  researchStimulus Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  opportunity     TransportationOpportunity @relation(fields: [opportunityId], references: [id])
+  agreement       MarketplaceAgreement @relation(fields: [agreementId], references: [id])
+  settlements     Settlement[]
+
+  @@index([opportunityId])
+  @@index([state])
+  @@index([environment])
+}
+
+model MoneyAccount {
+  id              String   @id @default(cuid())
+  ownerId         String
+  type            String   // customer | escrow | supplier | platform-revenue | platform-sandbox
+  currency        String   @default("USD")
+  balance         Int      @default(0) // integer minor units
+  environment     String   @default("SANDBOX")
+  frozen          Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  ledgerEntries   LedgerEntry[]
+
+  @@index([ownerId])
+  @@index([environment])
+}
+
+model LedgerEntry {
+  id              String   @id @default(cuid())
+  accountId       String
+  type            String   // DEBIT | CREDIT
+  amount          Int      // positive integer minor units
+  currency        String   @default("USD")
+  description     String
+  referenceType   String   // demand | opportunity | agreement | execution | payment-intent | settlement | refund
+  referenceId     String
+  idempotencyKey  String   @unique
+  pairedEntryId   String
+  environment     String   @default("SANDBOX")
+  timestamp       DateTime @default(now())
+
+  account         MoneyAccount @relation(fields: [accountId], references: [id])
+
+  @@index([accountId])
+  @@index([referenceType, referenceId])
+  @@index([environment])
+}
+
+model PaymentIntent {
+  id              String   @id @default(cuid())
+  demandId        String
+  agreementId     String?
+  executionId     String?
+  customerId      String
+  supplierId      String
+  amount          Int
+  userPrice       Int
+  supplierCompensation Int
+  platformFee     Int
+  currency        String   @default("USD")
+  status          String   @default("PENDING") // PENDING | AUTHORIZED | CAPTURED | RELEASED | REFUNDED | FAILED
+  idempotencyKey  String   @unique
+  authorizationId String?
+  captureId       String?
+  refundId        String?
+  environment     String   @default("SANDBOX")
+  createdAt       DateTime @default(now())
+  capturedAt      DateTime?
+
+  agreement       MarketplaceAgreement? @relation(fields: [agreementId], references: [id])
+
+  @@index([demandId])
+  @@index([agreementId])
+  @@index([status])
+}
+
+model Settlement {
+  id              String   @id @default(cuid())
+  executionId     String
+  supplierId      String
+  amount          Int
+  currency        String   @default("USD")
+  status          String   @default("PENDING") // PENDING | SETTLED | FAILED
+  idempotencyKey  String   @unique
+  environment     String   @default("SANDBOX")
+  settledAt       DateTime?
+  createdAt       DateTime @default(now())
+
+  execution       TransportationExecution @relation(fields: [executionId], references: [id])
+
+  @@index([executionId])
+  @@index([supplierId])
+}
+
+model AvailabilityBroadcast {
+  id              String   @id @default(cuid())
+  providerId      String
+  resourceId      String
+  currentLat      Float
+  currentLon      Float
+  destLat         Float
+  destLon         Float
+  departureStartSec Int
+  departureEndSec Int
+  availableCapacity Int
+  detourToleranceKm Float
+  minimumCompensation Int
+  confidence      Float
+  expiresAt       DateTime
+  status          String   @default("POTENTIAL") // POTENTIAL | OFFERED | RESERVED | COMMITTED | EXPIRED
+  isCommitted     Boolean  @default(false)
+  environment     String   @default("SANDBOX")
+  createdAt       DateTime @default(now())
+
+  @@index([status])
+  @@index([environment])
+  @@index([providerId])
+}
+
+model MarketplaceEvent {
+  id              String   @id @default(cuid())
+  eventType       String   // demand-created | opportunity-discovered | offer-made | negotiation-started | agreement-signed | payment-authorized | execution-started | execution-completed
+  referenceType   String   // demand | opportunity | offer | agreement | execution | payment | settlement
+  referenceId     String
+  environment     String   @default("SANDBOX")
+  payloadJson     String?  // JSON
+  timestamp       DateTime @default(now())
+
+  @@index([referenceType, referenceId])
+  @@index([environment])
+  @@index([timestamp])
+}

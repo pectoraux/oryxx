@@ -18,6 +18,7 @@ import {
   Layers,
   Filter,
   UserCheck,
+  Activity,
 } from "lucide-react";
 import { AuthGate } from "@/components/auth/auth-gate";
 import { UserMenu } from "@/components/auth/user-menu";
@@ -30,8 +31,9 @@ import { CapacityLab } from "@/components/oryxx/capacity-lab";
 import { WillingnessLab } from "@/components/oryxx/willingness-lab";
 import { ProviderResearchUI } from "@/components/oryxx/provider-research-ui";
 import { ResearchOperatorDashboard } from "@/components/oryxx/research-operator-dashboard";
+import { MarketplaceConsole } from "@/components/oryxx/marketplace-console";
 
-type View = "solver" | "market" | "experiment" | "real" | "capacity" | "willingness" | "participant" | "operator";
+type View = "solver" | "market" | "experiment" | "real" | "capacity" | "willingness" | "participant" | "operator" | "marketplace";
 
 export default function Home() {
   const { data: session, status } = useSession();
@@ -177,9 +179,17 @@ export default function Home() {
                   <ShieldCheck className="h-3.5 w-3.5" /> Operator Dashboard
                 </button>
               )}
+              <button
+                onClick={() => setView("marketplace")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  view === "marketplace" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Activity className="h-3.5 w-3.5" /> Marketplace
+              </button>
             </div>
           </div>
-          {view === "solver" ? <OryxConsole /> : view === "market" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div> : view === "experiment" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><ExperimentLab /></div> : view === "real" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><RealLab /></div> : view === "capacity" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><CapacityLab /></div> : view === "willingness" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><WillingnessLab /></div> : view === "participant" ? <div className="mx-auto w-full max-w-3xl px-4 py-6"><ProviderResearchUI /></div> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><ResearchOperatorDashboard /></div>}
+          {view === "solver" ? <OryxConsole /> : view === "market" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div> : view === "experiment" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><ExperimentLab /></div> : view === "real" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><RealLab /></div> : view === "capacity" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><CapacityLab /></div> : view === "willingness" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><WillingnessLab /></div> : view === "participant" ? <div className="mx-auto w-full max-w-3xl px-4 py-6"><ProviderResearchUI /></div> : view === "operator" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><ResearchOperatorDashboard /></div> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketplaceConsole /></div>}
         </>
       ) : (
         <UnauthenticatedLanding onSignIn={() => setAuthOpen(true)} />
