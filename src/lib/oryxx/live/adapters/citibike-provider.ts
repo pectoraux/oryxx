@@ -349,3 +349,10 @@ function haversineKm(a: GeoPoint, b: GeoPoint): number {
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// PROCESS-WIDE SINGLETON
+// ═══════════════════════════════════════════════════════════════════════
+// One shared instance across the marketplace route, the real solver, and the
+// health endpoint — so the cached health-check state is consistent everywhere.
+export const citibikeProvider = new CitiBikeNYCProvider();

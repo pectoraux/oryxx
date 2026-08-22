@@ -802,3 +802,16 @@ export function buildGraph(
   for (const edge of edges) graph.addEdge(edge);
   return graph;
 }
+
+/**
+ * Process-wide singleton transport graph.
+ *
+ * At HEAD this graph is EMPTY at runtime — no OSM/GTFS loader has populated it
+ * yet. The deterministic intent solver therefore still falls back to the
+ * synthetic `world.ts` hubs. The health endpoint reports this honestly
+ * (nodeCount === 0 → status "degraded"). As real ingestion connectors are
+ * added, they should call `transportGraph.addNode(...)` / `addEdge(...)` to
+ * populate this singleton so the solver, opportunity engine, and operator
+ * dashboard all observe the same real-world graph.
+ */
+export const transportGraph = new TransportGraph();

@@ -46,7 +46,7 @@ import { db } from "@/lib/db";
 import { providerRegistry } from "@/lib/oryxx/live/adapters/provider-registry";
 import { SandboxTransportationProvider } from "@/lib/oryxx/live/adapters/sandbox-provider";
 import { FixtureTransportationProvider } from "@/lib/oryxx/live/adapters/fixture-provider";
-import { CitiBikeNYCProvider } from "@/lib/oryxx/live/adapters/citibike-provider";
+import { CitiBikeNYCProvider, citibikeProvider } from "@/lib/oryxx/live/adapters/citibike-provider";
 import { discoverOpportunities } from "@/lib/oryxx/live/engine/opportunity-engine";
 import { clearMarket } from "@/lib/oryxx/live/engine/market-clearing";
 import { priceOpportunity } from "@/lib/oryxx/live/engine/pricing";
@@ -96,7 +96,7 @@ function ensureProviders() {
     providerRegistry.register(new FixtureTransportationProvider());
   }
   if (!providerRegistry.get("citi-bike-nyc")) {
-    providerRegistry.register(new CitiBikeNYCProvider());
+    providerRegistry.register(citibikeProvider);
   }
   providersRegistered = true;
 }
