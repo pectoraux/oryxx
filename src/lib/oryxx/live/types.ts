@@ -38,7 +38,8 @@ export type ProvenanceSource =
   | "inferred"
   | "assumed"
   | "citybik-es"
-  | "citi-bike-nyc";
+  | "citi-bike-nyc"
+  | "open-meteo";
 
 export interface Provenance {
   environment: Environment;
