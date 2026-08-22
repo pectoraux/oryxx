@@ -57,3 +57,7 @@ mini-services/*/node_modules/
 mini-services/*/service.log
 mini-services/*/.env*
 tool-results/
+
+# ORYXX local SQLite (sandbox-only; production uses PostgreSQL)
+db/*.db
+db/custom.db
