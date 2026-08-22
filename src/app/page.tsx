@@ -33,14 +33,28 @@ import { ProviderResearchUI } from "@/components/oryxx/provider-research-ui";
 import { ResearchOperatorDashboard } from "@/components/oryxx/research-operator-dashboard";
 import { MarketplaceConsole } from "@/components/oryxx/marketplace-console";
 import { LiveSupplyLab } from "@/components/oryxx/live-supply-lab";
+import { RealRoutes } from "@/components/oryxx/real-routes";
+import { SystemHealth } from "@/components/oryxx/system-health";
 
-type View = "solver" | "market" | "experiment" | "real" | "capacity" | "willingness" | "participant" | "operator" | "marketplace" | "live-supply";
+type View =
+  | "routes"        // PRODUCT: real-network routing (SLICE 1)
+  | "solver"        // PRODUCT: synthetic intent solver (legacy, deterministic)
+  | "marketplace"   // PRODUCT: live marketplace spine
+  | "health"        // PRODUCT: operator system health
+  | "market"        // RESEARCH/LABS
+  | "experiment"
+  | "real"
+  | "capacity"
+  | "willingness"
+  | "participant"
+  | "operator"
+  | "live-supply";
 
 export default function Home() {
   const { data: session, status } = useSession();
   const [authOpen, setAuthOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
-  const [view, setView] = useState<View>("solver");
+  const [view, setView] = useState<View>("routes");
 
   const isAuthenticated = status === "authenticated";
   const isAdmin = (session?.user as any)?.role === "admin";
@@ -111,94 +125,36 @@ export default function Home() {
               <WaitlistAdmin />
             </div>
           )}
-          {/* View switcher */}
+          {/* View switcher — separated into PRODUCT and RESEARCH/LABS */}
           <div className="mx-auto w-full max-w-6xl px-4 pt-4">
-            <div className="inline-flex rounded-lg border bg-muted/30 p-0.5">
-              <button
-                onClick={() => setView("solver")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "solver" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Navigation className="h-3.5 w-3.5" /> Intent Solver
-              </button>
-              <button
-                onClick={() => setView("market")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "market" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <FlaskConical className="h-3.5 w-3.5" /> Market Simulator
-              </button>
-              <button
-                onClick={() => setView("experiment")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "experiment" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Beaker className="h-3.5 w-3.5" /> Experiment Lab
-              </button>
-              <button
-                onClick={() => setView("real")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "real" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Globe className="h-3.5 w-3.5" /> Real-World Lab
-              </button>
-              <button
-                onClick={() => setView("capacity")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "capacity" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Layers className="h-3.5 w-3.5" /> Capacity Evidence
-              </button>
-              <button
-                onClick={() => setView("willingness")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "willingness" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Filter className="h-3.5 w-3.5" /> Willingness Lab
-              </button>
-              <button
-                onClick={() => setView("participant")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "participant" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <UserCheck className="h-3.5 w-3.5" /> Research Participant
-              </button>
-              {isAdmin && (
-                <button
-                  onClick={() => setView("operator")}
-                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                    view === "operator" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <ShieldCheck className="h-3.5 w-3.5" /> Operator Dashboard
-                </button>
-              )}
-              <button
-                onClick={() => setView("marketplace")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "marketplace" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Activity className="h-3.5 w-3.5" /> Marketplace
-              </button>
-              <button
-                onClick={() => setView("live-supply")}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  view === "live-supply" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Globe className="h-3.5 w-3.5" /> Live Supply Lab
-              </button>
+            <div className="space-y-2">
+              <div>
+                <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-500">Product</div>
+                <div className="inline-flex flex-wrap rounded-lg border bg-muted/30 p-0.5">
+                  <TabButton view={view} setView={setView} id="routes" icon={Navigation} label="Routes (Real Network)" />
+                  <TabButton view={view} setView={setView} id="solver" icon={Navigation} label="Intent Solver" />
+                  <TabButton view={view} setView={setView} id="marketplace" icon={Activity} label="Marketplace" />
+                  <TabButton view={view} setView={setView} id="health" icon={ShieldCheck} label="System Health" />
+                </div>
+              </div>
+              <div>
+                <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">Research / Labs (frozen — science paused)</div>
+                <div className="inline-flex flex-wrap rounded-lg border bg-muted/20 p-0.5">
+                  <TabButton view={view} setView={setView} id="market" icon={FlaskConical} label="Market Simulator" />
+                  <TabButton view={view} setView={setView} id="experiment" icon={Beaker} label="Experiment Lab" />
+                  <TabButton view={view} setView={setView} id="real" icon={Globe} label="Real-World Lab" />
+                  <TabButton view={view} setView={setView} id="capacity" icon={Layers} label="Capacity Evidence" />
+                  <TabButton view={view} setView={setView} id="willingness" icon={Filter} label="Willingness Lab" />
+                  <TabButton view={view} setView={setView} id="participant" icon={UserCheck} label="Research Participant" />
+                  {isAdmin && (
+                    <TabButton view={view} setView={setView} id="operator" icon={ShieldCheck} label="Operator Dashboard" />
+                  )}
+                  <TabButton view={view} setView={setView} id="live-supply" icon={Globe} label="Live Supply Lab" />
+                </div>
+              </div>
             </div>
           </div>
-          {view === "solver" ? <OryxConsole /> : view === "market" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketSimulator /></div> : view === "experiment" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><ExperimentLab /></div> : view === "real" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><RealLab /></div> : view === "capacity" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><CapacityLab /></div> : view === "willingness" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><WillingnessLab /></div> : view === "participant" ? <div className="mx-auto w-full max-w-3xl px-4 py-6"><ProviderResearchUI /></div> : view === "operator" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><ResearchOperatorDashboard /></div> : view === "marketplace" ? <div className="mx-auto w-full max-w-6xl px-4 py-6"><MarketplaceConsole /></div> : <div className="mx-auto w-full max-w-6xl px-4 py-6"><LiveSupplyLab /></div>}
+          <ViewRenderer view={view} />
         </>
       ) : (
         <UnauthenticatedLanding onSignIn={() => setAuthOpen(true)} />
@@ -216,7 +172,7 @@ export default function Home() {
             </span>
           </div>
           <span className="text-[11px] text-muted-foreground/70">
-            Prototype · simulated 3-graph · deterministic solver · LLM intent layer
+            Production build · REAL OSM/OSRM/GTFS routing · OBSERVED_ONLY Citi Bike · sandbox marketplace · frozen research layer
           </span>
         </div>
       </footer>
@@ -224,6 +180,65 @@ export default function Home() {
       <AuthGate open={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
   );
+}
+
+function TabButton({
+  view,
+  setView,
+  id,
+  icon: Icon,
+  label,
+}: {
+  view: View;
+  setView: (v: View) => void;
+  id: View;
+  icon: any;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={() => setView(id)}
+      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+        view === id ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      <Icon className="h-3.5 w-3.5" /> {label}
+    </button>
+  );
+}
+
+function ViewRenderer({ view }: { view: View }) {
+  const wrap = (children: React.ReactNode, max = "max-w-6xl") => (
+    <div className={`mx-auto w-full ${max} px-4 py-6`}>{children}</div>
+  );
+  switch (view) {
+    case "routes":
+      return <div className="mx-auto w-full max-w-6xl px-4 py-6"><RealRoutes /></div>;
+    case "solver":
+      return <OryxConsole />;
+    case "marketplace":
+      return wrap(<MarketplaceConsole />);
+    case "health":
+      return wrap(<SystemHealth />);
+    case "market":
+      return wrap(<MarketSimulator />);
+    case "experiment":
+      return wrap(<ExperimentLab />);
+    case "real":
+      return wrap(<RealLab />);
+    case "capacity":
+      return wrap(<CapacityLab />);
+    case "willingness":
+      return wrap(<WillingnessLab />);
+    case "participant":
+      return wrap(<ProviderResearchUI />, "max-w-3xl");
+    case "operator":
+      return wrap(<ResearchOperatorDashboard />);
+    case "live-supply":
+      return wrap(<LiveSupplyLab />);
+    default:
+      return wrap(<RealRoutes />);
+  }
 }
 
 function UnauthenticatedLanding({ onSignIn }: { onSignIn: () => void }) {
